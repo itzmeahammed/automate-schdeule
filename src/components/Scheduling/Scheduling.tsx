@@ -1,0 +1,992 @@
+import React, { useState, useEffect, useReducer } from 'react';
+import { useApp } from '../../contexts/AppContext';
+import { generateScheduleWithConflicts, optimizeSchedule, getAutoStatus, ScheduleConflict, checkDeliveryFeasibility, getAutoPOStatus } from '../../utils/scheduling';
+import GanttChart from './GanttChart';
+import { ScheduleItem, PurchaseOrder } from '../../types';
+import { 
+  Calendar, 
+  Filter, 
+  Download, 
+  RefreshCw, 
+  Settings, 
+  Play, 
+  Pause, 
+  RotateCcw,
+  Zap,
+  Target,
+  Clock,
+  CheckCircle,
+  HelpCircle
+} from 'lucide-react';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+const Scheduling: React.FC = () => {
+  const { 
+    purchaseOrders, 
+    products, 
+    machines, 
+    user, 
+    scheduleItems, 
+    setScheduleItems,
+    shifts,
+    updatePurchaseOrder, // <-- add this
+    holidays
+  } = useApp();
+  
+  const [filter, setFilter] = useState({
+    dateRange: 'week',
+    machineId: '',
+    productId: '',
+    status: '',
+    startDate: '',
+    endDate: '',
+  });
+  
+  const [filteredSchedule, setFilteredSchedule] = useState(scheduleItems);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [refreshKey, forceRefresh] = useReducer(x => x + 1, 0);
+  const [conflicts, setConflicts] = useState<ScheduleConflict[]>([]);
+  const [showConflictModal, setShowConflictModal] = useState(false);
+  const [editedEndDates, setEditedEndDates] = useState<{ [poId: string]: string }>({});
+  const [conflictSearch, setConflictSearch] = useState('');
+  // Add state for delayed PO popup
+  const [showDelayedPopup, setShowDelayedPopup] = useState<{poId: string, open: boolean}>({poId: '', open: false});
+  const [detailsFilter, setDetailsFilter] = useState({ productId: '', machineId: '' });
+  const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (selectedItem) setNotes(selectedItem.notes || "");
+  }, [selectedItem]);
+
+  useEffect(() => {
+    let filtered = scheduleItems;
+
+    if (filter.machineId) {
+      filtered = filtered.filter(item => item.machineId === filter.machineId);
+    }
+
+    if (filter.productId) {
+      filtered = filtered.filter(item => item.productId === filter.productId);
+    }
+
+    if (filter.status) {
+      filtered = filtered.filter(item => item.status === filter.status);
+    }
+
+    if (filter.startDate && filter.endDate) {
+      filtered = filtered.filter(item => {
+        const itemDate = new Date(item.startDate);
+        return itemDate >= new Date(filter.startDate) && itemDate <= new Date(filter.endDate);
+      });
+    }
+
+    setFilteredSchedule(filtered);
+  }, [scheduleItems, filter]);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      setToast(e.detail);
+      setTimeout(() => setToast(null), 3000);
+    };
+    window.addEventListener('toast', handler);
+    return () => window.removeEventListener('toast', handler);
+  }, []);
+
+  const generateProductionSchedule = async () => {
+    setIsGenerating(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const { schedule: newSchedule, conflicts } = generateScheduleWithConflicts(
+        purchaseOrders,
+        products,
+        machines,
+        shifts,
+        holidays
+      );
+      // Preserve progress and status for in-progress/completed items
+      const mergedSchedule = newSchedule.map(newItem => {
+        const prevItem = scheduleItems.find(
+          item => item.id === newItem.id
+        );
+        if (prevItem && (prevItem.status === 'in-progress' || prevItem.status === 'completed')) {
+          return {
+            ...newItem,
+            status: prevItem.status,
+            startDate: prevItem.startDate,
+            endDate: prevItem.endDate,
+            actualStartTime: prevItem.actualStartTime,
+            actualEndTime: prevItem.actualEndTime
+          };
+        }
+        return newItem;
+      });
+      if (conflicts.length > 0) {
+        setConflicts(conflicts);
+        setShowConflictModal(true);
+      } else {
+        setScheduleItems(mergedSchedule);
+      }
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const optimizeCurrentSchedule = async () => {
+    setIsOptimizing(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const optimized = optimizeSchedule(scheduleItems, machines, products);
+      setScheduleItems(optimized);
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
+
+  const exportSchedule = (format: 'excel' | 'word' | 'pdf') => {
+    const data = filteredSchedule.map(item => {
+      const product = products.find(p => p.id === item.productId);
+      const machine = machines.find(m => m.id === item.machineId);
+      const po = purchaseOrders.find(p => p.id === item.poId);
+      return {
+        'PO Number': po?.poNumber || 'N/A',
+        'Product': product?.productName || 'Unknown',
+        'Part Number': product?.partNumber || 'N/A',
+        'Machine': machine?.machineName || 'Unknown',
+        'Start Date': new Date(item.startDate).toLocaleString(),
+        'End Date': new Date(item.endDate).toLocaleString(),
+        'Quantity': item.quantity,
+        'Process Step': item.processStep,
+        'Allocated Time': `${item.allocatedTime} minutes`,
+        'Status': item.status,
+        'Efficiency': `${item.efficiency}%`,
+        'Quality Score': item.qualityScore || 'N/A',
+        'Notes': item.notes || ''
+      };
+    });
+    if (format === 'excel') {
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
+      XLSX.writeFile(wb, `production-schedule-${new Date().toISOString().split('T')[0]}.xlsx`);
+      return;
+    }
+    if (format === 'pdf') {
+      const doc = new jsPDF();
+      if (data.length === 0) {
+        doc.text('No schedule data available.', 10, 10);
+      } else {
+        autoTable(doc, {
+          head: [Object.keys(data[0])],
+          body: data.map(row => Object.values(row)),
+          styles: { fontSize: 8 },
+          headStyles: { fillColor: [41, 128, 185] },
+          margin: { top: 20 },
+        });
+      }
+      doc.save(`production-schedule-${new Date().toISOString().split('T')[0]}.pdf`);
+      return;
+    }
+    // fallback: CSV
+    const csvContent = [
+      Object.keys(data[0] || {}).join(','),
+      ...data.map(row => Object.values(row).map(val => `"${val}"`).join(','))
+    ].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `production-schedule-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const updateScheduleItem = (itemId: string, updates: Partial<ScheduleItem>) => {
+    setScheduleItems(((((prev: ScheduleItem[]) => prev.map((item: ScheduleItem) =>
+      item.id === itemId ? { ...item, ...updates } : item
+    ))) as any));
+  };
+
+  const getScheduleStats = () => {
+    const total = filteredSchedule.length;
+    const completed = filteredSchedule.filter(item => item.status === 'completed').length;
+    const inProgress = filteredSchedule.filter(item => item.status === 'in-progress').length;
+    const delayed = filteredSchedule.filter(item => item.status === 'delayed').length;
+    const scheduled = filteredSchedule.filter(item => item.status === 'scheduled').length;
+    
+    const avgEfficiency = filteredSchedule.length > 0 
+      ? filteredSchedule.reduce((sum, item) => sum + item.efficiency, 0) / filteredSchedule.length 
+      : 0;
+
+    return { total, completed, inProgress, delayed, scheduled, avgEfficiency };
+  };
+
+  const stats = getScheduleStats();
+
+  // Helper to get a suggested feasible end date for a PO
+  const getSuggestedEndDate = (po: PurchaseOrder) => {
+    const product = products.find(p => p.id === po.productId);
+    if (!product) return '';
+    const { suggestedDate } = checkDeliveryFeasibility(
+      po,
+      product,
+      machines,
+      shifts,
+      holidays
+    );
+    return suggestedDate || '';
+  };
+
+  // Helper to get the next N feasible end dates for a PO
+  const getNextFeasibleEndDates = (po: PurchaseOrder, count = 3) => {
+    const product = products.find(p => p.id === po.productId);
+    if (!product) return [];
+    const baseDate = new Date(po.deliveryDate);
+    const feasibleDates: string[] = [];
+    let testDate = new Date(baseDate);
+    let tries = 0;
+    while (feasibleDates.length < count && tries < 30) { // limit to 30 tries
+      testDate.setDate(testDate.getDate() + 1);
+      const testPODate = { ...po, deliveryDate: testDate.toISOString().slice(0, 10) };
+      const { feasible } = checkDeliveryFeasibility(
+        testPODate,
+        product,
+        machines,
+        shifts,
+        holidays
+      );
+      if (feasible) {
+        feasibleDates.push(testDate.toISOString().slice(0, 10));
+      }
+      tries++;
+    }
+    return feasibleDates;
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-indigo-50/30">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-6 right-6 z-50 px-6 py-3 rounded-lg shadow-lg text-white font-semibold transition-all animate-fade-in ${toast.type === 'success' ? 'bg-green-600' : toast.type === 'info' ? 'bg-blue-600' : 'bg-red-600'}`}>
+          {toast.message}
+        </div>
+      )}
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 shadow-sm">
+        <div className="p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl">
+                <Calendar size={24} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Production Schedule</h1>
+                <p className="text-gray-600">AI-powered auto-scheduling and optimization</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => forceRefresh()}
+                className="flex items-center space-x-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-700 transition-colors"
+                title="Refresh Progress"
+              >
+                <RefreshCw size={16} />
+                <span>Refresh</span>
+              </button>
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className="flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+              >
+                <Settings size={16} />
+                <span>Settings</span>
+              </button>
+              
+              <button
+                onClick={optimizeCurrentSchedule}
+                disabled={isOptimizing || scheduleItems.length === 0}
+                className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+              >
+                <Zap size={16} className={isOptimizing ? 'animate-spin' : ''} />
+                <span>Optimize</span>
+              </button>
+              
+              <button
+                onClick={generateProductionSchedule}
+                disabled={isGenerating}
+                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={16} className={isGenerating ? 'animate-spin' : ''} />
+                <span>{isGenerating ? 'Generating...' : 'Generate Schedule'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="p-6">
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4 mb-6">
+          <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Total Items</p>
+                <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
+              </div>
+              <Target className="text-blue-500" size={24} />
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Completed</p>
+                <p className="text-2xl font-bold text-green-600">{stats.completed}</p>
+              </div>
+              <CheckCircle className="text-green-500" size={24} />
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">In Progress</p>
+                <p className="text-2xl font-bold text-blue-600">{stats.inProgress}</p>
+              </div>
+              <Play className="text-blue-500" size={24} />
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Delayed</p>
+                <p className="text-2xl font-bold text-red-600">{stats.delayed}</p>
+              </div>
+              <Clock className="text-red-500" size={24} />
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Scheduled</p>
+                <p className="text-2xl font-bold text-amber-600">{stats.scheduled}</p>
+              </div>
+              <Calendar className="text-amber-500" size={24} />
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Avg Efficiency</p>
+                <p className="text-2xl font-bold text-purple-600">{stats.avgEfficiency.toFixed(1)}%</p>
+              </div>
+              <Zap className="text-purple-500" size={24} />
+            </div>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-medium text-gray-900">Filters & Controls</h3>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => exportSchedule('excel')}
+                className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+              >
+                <Download size={16} />
+                <span>Excel</span>
+              </button>
+              <button
+                onClick={() => exportSchedule('word')}
+                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <Download size={16} />
+                <span>Word</span>
+              </button>
+              <button
+                onClick={() => exportSchedule('pdf')}
+                className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              >
+                <Download size={16} />
+                <span>PDF</span>
+              </button>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Date Range
+              </label>
+              <select
+                value={filter.dateRange}
+                onChange={(e) => setFilter(prev => ({ ...prev, dateRange: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="today">Today</option>
+                <option value="week">This Week</option>
+                <option value="month">This Month</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Machine
+              </label>
+              <select
+                value={filter.machineId}
+                onChange={(e) => setFilter(prev => ({ ...prev, machineId: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Machines</option>
+                {machines.map(machine => (
+                  <option key={machine.id} value={machine.id}>
+                    {machine.machineName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Product
+              </label>
+              <select
+                value={filter.productId}
+                onChange={(e) => setFilter(prev => ({ ...prev, productId: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Products</option>
+                {products.map(product => (
+                  <option key={product.id} value={product.id}>
+                    {product.productName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Status
+              </label>
+              <select
+                value={filter.status}
+                onChange={(e) => setFilter(prev => ({ ...prev, status: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Status</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="in-progress">In Progress</option>
+                <option value="completed">Completed</option>
+                <option value="delayed">Delayed</option>
+                <option value="paused">Paused</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Start Date
+              </label>
+              <input
+                type="date"
+                value={filter.startDate}
+                onChange={(e) => setFilter(prev => ({ ...prev, startDate: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                End Date
+              </label>
+              <input
+                type="date"
+                value={filter.endDate}
+                onChange={(e) => setFilter(prev => ({ ...prev, endDate: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Gantt Chart */}
+        <GanttChart 
+          scheduleItems={filteredSchedule} 
+          onItemClick={setSelectedItem}
+        />
+
+        {/* Schedule Items List */}
+        {filteredSchedule.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 mt-6">
+            <div className="p-6 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-semibold text-gray-900">Schedule Details</h3>
+                <span className="relative group">
+                  <HelpCircle size={18} className="text-blue-400 cursor-pointer" />
+                  <div className="absolute left-6 top-0 z-20 w-64 p-3 bg-white border border-blue-200 rounded-lg shadow-lg text-xs text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
+                    <b>Actions:</b><br/>
+                    <b>Settings</b>: View and edit schedule item details<br/>
+                    <b>Start</b>: Mark as in-progress<br/>
+                    <b>Pause</b>: Pause an in-progress item<br/>
+                    <b>Progress Bar</b>: Shows completion %<br/>
+                    <b>Status Badge</b>: Read-only, auto-calculated
+                  </div>
+                </span>
+              </div>
+              <div className="flex gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Filter by Product</label>
+                  <select
+                    value={detailsFilter.productId}
+                    onChange={e => setDetailsFilter(f => ({ ...f, productId: e.target.value }))}
+                    className="px-2 py-1 border border-gray-300 rounded-md text-sm"
+                  >
+                    <option value="">All Products</option>
+                    {products.map(product => (
+                      <option key={product.id} value={product.id}>{product.productName}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Filter by Machine</label>
+                  <select
+                    value={detailsFilter.machineId}
+                    onChange={e => setDetailsFilter(f => ({ ...f, machineId: e.target.value }))}
+                    className="px-2 py-1 border border-gray-300 rounded-md text-sm"
+                  >
+                    <option value="">All Machines</option>
+                    {machines.map(machine => (
+                      <option key={machine.id} value={machine.id}>{machine.machineName}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      PO / Product
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Machine
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Schedule
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Progress
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {filteredSchedule
+                    .filter(item =>
+                      (!detailsFilter.productId || item.productId === detailsFilter.productId) &&
+                      (!detailsFilter.machineId || item.machineId === detailsFilter.machineId)
+                    )
+                    .map((item) => {
+                    const product = products.find(p => p.id === item.productId);
+                    const machine = machines.find(m => m.id === item.machineId);
+                    const po = purchaseOrders.find(p => p.id === item.poId);
+                    // Dynamic progress calculation
+                    let start = new Date(item.actualStartTime || item.startDate);
+                    let end = new Date(item.actualEndTime || item.endDate);
+                    let now = new Date();
+                    let progress = 0;
+                    if (now <= start) progress = 0;
+                    else if (now >= end) progress = 100;
+                    else progress = Math.round(((now.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100);
+                    // Auto-complete if finished before end date
+                    if (progress === 100 && item.status !== 'completed' && now <= end) {
+                      updateScheduleItem(item.id, { status: 'completed', actualEndTime: now.toISOString() });
+                    }
+                    // Calculate status automatically
+                    const autoStatus = getAutoStatus(item);
+                    // If delayed, show popup for manual completion
+                    if (autoStatus === 'delayed' && showDelayedPopup.poId !== item.poId && !showDelayedPopup.open) {
+                      setShowDelayedPopup({poId: item.poId, open: true});
+                    }
+                    
+                    return (
+                      <tr key={item.id + refreshKey} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{po?.poNumber}</p>
+                            <p className="text-sm text-gray-500">{product?.productName}</p>
+                            <p className="text-xs text-gray-400">Step {item.processStep} • Qty: {item.quantity}</p>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{machine?.machineName}</p>
+                            <p className="text-sm text-gray-500">{machine?.machineType}</p>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <p className="text-sm text-gray-900">{new Date(item.startDate).toLocaleDateString()}</p>
+                            <p className="text-sm text-gray-500">
+                              {new Date(item.startDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - 
+                              {new Date(item.endDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            <p className="text-xs text-gray-400">{item.allocatedTime} minutes</p>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                            <div 
+                              className={`h-2 rounded-full transition-all duration-300 ${
+                                progress === 100 ? 'bg-green-500' :
+                                progress > 50 ? 'bg-blue-500' :
+                                progress > 0 ? 'bg-yellow-500' : 'bg-gray-300'
+                              }`}
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
+                          <p className="text-xs text-gray-500">{progress}% complete</p>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {/* Status badge, read-only */}
+                          <span
+                            className={`text-xs font-medium rounded-full px-3 py-1 border ${
+                              autoStatus === 'completed' ? 'bg-green-100 text-green-800 border-green-200' :
+                              autoStatus === 'in-progress' ? 'bg-blue-100 text-blue-800 border-blue-200' :
+                              autoStatus === 'delayed' ? 'bg-red-100 text-red-800 border-red-200' :
+                              autoStatus === 'paused' ? 'bg-yellow-100 text-yellow-800 border-yellow-200' :
+                              'bg-gray-100 text-gray-800 border-gray-200'
+                            }`}
+                          >
+                            {autoStatus}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          <div className="flex items-center space-x-2">
+                            <button
+                              onClick={() => setSelectedItem(item)}
+                              className="text-blue-600 hover:text-blue-800"
+                              title="View and edit notes"
+                            >
+                              <Settings size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Empty State */}
+        {filteredSchedule.length === 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+            <Calendar size={48} className="mx-auto text-gray-300 mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No scheduled items found</h3>
+            <p className="text-gray-500 mb-6">
+              Generate a schedule to see production planning or adjust your filters.
+            </p>
+            <button
+              onClick={generateProductionSchedule}
+              disabled={isGenerating}
+              className="flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 mx-auto"
+            >
+              <RefreshCw size={16} className={isGenerating ? 'animate-spin' : ''} />
+              <span>{isGenerating ? 'Generating...' : 'Generate Schedule'}</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Item Details Modal */}
+      {selectedItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">Schedule Item Details</h3>
+                <button
+                  onClick={() => setSelectedItem(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div className="p-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Notes</label>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    rows={3}
+                  />
+                </div>
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => setSelectedItem(null)}
+                    className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      updateScheduleItem(selectedItem.id, { notes });
+                      setSelectedItem(null);
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    Save Changes
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Conflict Modal */}
+      {showConflictModal && conflicts.length > 0 && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl max-w-3xl w-full mx-4 max-h-[90vh] overflow-y-auto p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Scheduling Conflict Detected</h3>
+              <button
+                onClick={() => {
+                  setShowConflictModal(false);
+                  setEditedEndDates({});
+                  setConflictSearch('');
+                }}
+                className="text-gray-400 hover:text-gray-600 text-2xl"
+              >
+                ×
+              </button>
+            </div>
+            {/* Search Bar */}
+            <div className="mb-4 flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Search PO number or product name..."
+                value={conflictSearch}
+                onChange={e => setConflictSearch(e.target.value)}
+                className="border px-3 py-2 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="space-y-4">
+              {conflicts
+                .filter(conflict => {
+                  const poNum = conflict.newPO.poNumber?.toLowerCase() || '';
+                  const prod = (products.find(p => p.id === conflict.newPO.productId)?.productName || '').toLowerCase();
+                  return (
+                    poNum.includes(conflictSearch.toLowerCase()) ||
+                    prod.includes(conflictSearch.toLowerCase())
+                  );
+                })
+                .map((conflict, idx) => {
+                  const priorityColor = {
+                    urgent: 'bg-red-100 text-red-700 border-red-300',
+                    high: 'bg-orange-100 text-orange-700 border-orange-300',
+                    medium: 'bg-yellow-100 text-yellow-700 border-yellow-300',
+                    low: 'bg-green-100 text-green-700 border-green-300'
+                  }[conflict.newPO.priority] || 'bg-gray-100 text-gray-700 border-gray-300';
+                  // Calculate a new suggested end date for this PO
+                  const suggestedEndDate = getSuggestedEndDate(conflict.newPO) || conflict.suggestedEndDate;
+                  // Get next 3 feasible end dates if needed
+                  const product = products.find(p => p.id === conflict.newPO.productId);
+                  const qtyByDelivery = scheduleItems
+                    .filter(item => item.poId === conflict.newPO.id && new Date(item.endDate) <= new Date(suggestedEndDate))
+                    .reduce((sum, item) => sum + item.quantity, 0);
+                  const showFeasibleChips = qtyByDelivery < conflict.newPO.quantity;
+                  const nextFeasibleDates = showFeasibleChips ? getNextFeasibleEndDates(conflict.newPO, 3) : [];
+                  return (
+                    <div key={idx} className="border-2 border-blue-200 rounded-xl p-5 bg-gradient-to-br from-blue-50 to-white shadow-md">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold border ${priorityColor}`}>
+                          {conflict.newPO.priority.toUpperCase()}
+                        </span>
+                        <span className="px-3 py-1 rounded-full text-xs font-semibold border bg-indigo-100 text-indigo-700 border-indigo-300">
+                          PO #{conflict.newPO.poNumber}
+                        </span>
+                        <span className="px-3 py-1 rounded-full text-xs font-semibold border bg-pink-100 text-pink-700 border-pink-300">
+                          {products.find(p => p.id === conflict.newPO.productId)?.productName || 'Unknown Product'}
+                        </span>
+                        <span className="px-3 py-1 rounded-full text-xs font-semibold border bg-cyan-100 text-cyan-700 border-cyan-300">
+                          {machines.find(m => m.id === conflict.machineId)?.machineName || 'Unknown Machine'}
+                        </span>
+                      </div>
+                      <div className="mb-2 text-base font-semibold text-red-700 flex items-center gap-2">
+                        <span>⚠️</span>
+                        <span>{conflict.userMessage}</span>
+                      </div>
+                      <div className="flex items-center gap-4 mb-2">
+                        <span className="text-xs text-gray-600 font-medium">Change End Date:</span>
+                        <input
+                          type="date"
+                          value={
+                            editedEndDates[conflict.conflictingPO.id] ||
+                            suggestedEndDate.slice(0, 10)
+                          }
+                          min={suggestedEndDate.slice(0, 10)}
+                          onChange={e =>
+                            setEditedEndDates(prev => ({
+                              ...prev,
+                              [conflict.conflictingPO.id]: e.target.value
+                            }))
+                          }
+                          className="border-2 border-blue-300 px-2 py-1 rounded-lg focus:ring-2 focus:ring-blue-400"
+                        />
+                        <span className="text-xs text-blue-700 ml-2 font-semibold">
+                          (Suggested: {suggestedEndDate ? new Date(suggestedEndDate).toLocaleDateString() : 'N/A'})
+                        </span>
+                        <span className="text-xs text-gray-500 ml-2">
+                          (Current scheduled: <b>{new Date(conflict.suggestedEndDate).toLocaleDateString()}</b>)
+                        </span>
+                      </div>
+                      {showFeasibleChips && nextFeasibleDates.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-2 ml-2">
+                          <span className="text-xs text-gray-600 font-medium mr-2">Next feasible dates:</span>
+                          {nextFeasibleDates.map(date => (
+                            <button
+                              key={date}
+                              type="button"
+                              onClick={() => setEditedEndDates(prev => ({ ...prev, [conflict.conflictingPO.id]: date }))}
+                              className="px-3 py-1 rounded-full text-xs font-semibold border border-green-300 bg-green-50 text-green-700 hover:bg-green-100 transition-colors"
+                            >
+                              {new Date(date).toLocaleDateString()}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="text-xs text-gray-500 ml-8">
+                        Delivery Date: <b className="text-blue-700">{conflict.newPO.deliveryDate}</b>
+                      </div>
+                    </div>
+                  );
+                })}
+              {conflicts.filter(conflict => {
+                const poNum = conflict.newPO.poNumber?.toLowerCase() || '';
+                const prod = (products.find(p => p.id === conflict.newPO.productId)?.productName || '').toLowerCase();
+                return (
+                  poNum.includes(conflictSearch.toLowerCase()) ||
+                  prod.includes(conflictSearch.toLowerCase())
+                );
+              }).length === 0 && (
+                <div className="text-center text-gray-400 py-8">No conflicts found for your search.</div>
+              )}
+            </div>
+            <div className="flex justify-end mt-6 gap-3">
+              <button
+                onClick={() => {
+                  setShowConflictModal(false);
+                  setEditedEndDates({});
+                  setConflictSearch('');
+                }}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  let updatedSchedule = [...scheduleItems];
+                  // Update PO deliveryDate for each conflict
+                  for (const conflict of conflicts) {
+                    const newEndDate =
+                      editedEndDates[conflict.conflictingPO.id] ||
+                      conflict.suggestedEndDate.slice(0, 10);
+                    // Update PO deliveryDate
+                    await updatePurchaseOrder(conflict.conflictingPO.id, {
+                      deliveryDate: newEndDate
+                    });
+                    // Update schedule item endDate for UI
+                    updatedSchedule = updatedSchedule.map(item =>
+                      item.poId === conflict.conflictingPO.id
+                        ? {
+                            ...item,
+                            endDate: new Date(newEndDate + 'T23:59:59.999Z').toISOString(),
+                            notes: (item.notes || '') + ' [User changed end date to resolve conflict]'
+                          }
+                        : item
+                    );
+                  }
+                  setScheduleItems(updatedSchedule);
+                  setShowConflictModal(false);
+                  setConflicts([]);
+                  setEditedEndDates({});
+                  setConflictSearch('');
+                  // Re-run schedule generation to recalculate with new delivery dates
+                  await generateProductionSchedule();
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Resolve Conflict & Update Schedule
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delayed PO Popup */}
+      {showDelayedPopup.open && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 border-4 border-red-300 animate-fade-in">
+            <div className="flex flex-col items-center">
+              <div className="mb-4">
+                <svg width="48" height="48" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fee2e2"/><path d="M12 8v4m0 4h.01" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+              <h2 className="text-2xl font-bold text-red-700 mb-2">PO Delayed</h2>
+              <p className="text-gray-700 mb-4 text-center">This Purchase Order is delayed. If the client is okay with the delay, you can mark it as completed manually.</p>
+              <div className="flex gap-4">
+                <button
+                  className="px-6 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition"
+                  onClick={() => {
+                    // Mark all schedule items for this PO as completed
+                    setScheduleItems(
+                      scheduleItems.map((item) =>
+                        item.poId === showDelayedPopup.poId
+                          ? { ...item, status: 'completed', actualEndTime: new Date().toISOString() }
+                          : item
+                      )
+                    );
+                    setShowDelayedPopup({poId: '', open: false});
+                  }}
+                >
+                  Mark as Completed
+                </button>
+                <button
+                  className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg font-semibold hover:bg-gray-400 transition"
+                  onClick={() => setShowDelayedPopup({poId: '', open: false})}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Scheduling;
