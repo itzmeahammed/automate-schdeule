@@ -21,6 +21,7 @@ import {
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType, AlignmentType, HeadingLevel, BorderStyle } from 'docx';
 
 const Scheduling: React.FC = () => {
   const { 
@@ -149,7 +150,7 @@ const Scheduling: React.FC = () => {
     }
   };
 
-  const exportSchedule = (format: 'excel' | 'word' | 'pdf') => {
+  const exportSchedule = async (format: 'excel' | 'word' | 'pdf') => {
     const data = filteredSchedule.map(item => {
       const product = products.find(p => p.id === item.productId);
       const machine = machines.find(m => m.id === item.machineId);
@@ -170,27 +171,186 @@ const Scheduling: React.FC = () => {
         'Notes': item.notes || ''
       };
     });
+    const today = new Date().toLocaleDateString();
+    const company = user?.name || 'Manufacturing Company';
+    const reportTitle = 'Production Schedule Report';
+    // --- Excel ---
     if (format === 'excel') {
       const ws = XLSX.utils.json_to_sheet(data);
+      // Style header row
+      const header = Object.keys(data[0] || {});
+      header.forEach((h, idx) => {
+        const cell = XLSX.utils.encode_cell({ r: 0, c: idx });
+        if (!ws[cell]) ws[cell] = { t: 's', v: h };
+        ws[cell].s = {
+          font: { bold: true, color: { rgb: 'FFFFFF' } },
+          fill: { fgColor: { rgb: '2563EB' } },
+          alignment: { horizontal: 'center' },
+          border: {
+            top: { style: 'thin', color: { rgb: '2563EB' } },
+            bottom: { style: 'thin', color: { rgb: '2563EB' } },
+            left: { style: 'thin', color: { rgb: '2563EB' } },
+            right: { style: 'thin', color: { rgb: '2563EB' } },
+          },
+        };
+      });
+      // Add a summary row at the top
+      XLSX.utils.sheet_add_aoa(ws, [[company, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A1' });
+      XLSX.utils.sheet_add_aoa(ws, [[reportTitle, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A2' });
+      XLSX.utils.sheet_add_aoa(ws, [[`Date: ${today}`, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A3' });
+      // Move data down by 3 rows
+      XLSX.utils.sheet_add_json(ws, data, { origin: 'A5', skipHeader: false });
+      // Set column widths
+      ws['!cols'] = header.map(() => ({ wch: 18 }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
       XLSX.writeFile(wb, `production-schedule-${new Date().toISOString().split('T')[0]}.xlsx`);
       return;
     }
+    // --- PDF ---
     if (format === 'pdf') {
       const doc = new jsPDF();
+      doc.setFontSize(18);
+      doc.setTextColor(37, 99, 235);
+      doc.text(company, 10, 15);
+      doc.setFontSize(14);
+      doc.setTextColor(30, 41, 59);
+      doc.text(reportTitle, 10, 25);
+      doc.setFontSize(10);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Date: ${today}`, 10, 32);
       if (data.length === 0) {
-        doc.text('No schedule data available.', 10, 10);
+        doc.text('No schedule data available.', 10, 45);
       } else {
         autoTable(doc, {
+          startY: 38,
           head: [Object.keys(data[0])],
           body: data.map(row => Object.values(row)),
-          styles: { fontSize: 8 },
-          headStyles: { fillColor: [41, 128, 185] },
-          margin: { top: 20 },
+          styles: { fontSize: 9, cellPadding: 2 },
+          headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' },
+          alternateRowStyles: { fillColor: [239, 246, 255] },
+          margin: { left: 10, right: 10 },
+          tableLineColor: [37, 99, 235],
+          tableLineWidth: 0.2,
         });
       }
       doc.save(`production-schedule-${new Date().toISOString().split('T')[0]}.pdf`);
+      return;
+    }
+    // --- Word ---
+    if (format === 'word') {
+      const headerRow = new TableRow({
+        children: Object.keys(data[0] || {}).map(h =>
+          new TableCell({
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun({ text: h, bold: true, color: '2563EB', size: 24 }),
+                ],
+                alignment: AlignmentType.CENTER,
+              }),
+            ],
+            shading: { fill: 'E0E7FF' },
+            borders: {
+              top: { style: BorderStyle.SINGLE, size: 1, color: '2563EB' },
+              bottom: { style: BorderStyle.SINGLE, size: 1, color: '2563EB' },
+              left: { style: BorderStyle.SINGLE, size: 1, color: '2563EB' },
+              right: { style: BorderStyle.SINGLE, size: 1, color: '2563EB' },
+            },
+          })
+        ),
+      });
+      const dataRows = data.map(row =>
+        new TableRow({
+          children: Object.values(row).map(val =>
+            new TableCell({
+              children: [
+                new Paragraph({
+                  children: [
+                    new TextRun({ text: String(val), color: '1E293B', size: 22 }),
+                  ],
+                  alignment: AlignmentType.LEFT,
+                }),
+              ],
+              borders: {
+                top: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+                bottom: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+                left: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+                right: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+              },
+            })
+          ),
+        })
+      );
+      const summaryTable = new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            children: [
+              new TableCell({
+                children: [
+                  new Paragraph({
+                    children: [new TextRun({ text: company, bold: true, size: 28, color: '2563EB' })],
+                    alignment: AlignmentType.LEFT,
+                  }),
+                ],
+                columnSpan: 2,
+                borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
+              }),
+            ],
+          }),
+          new TableRow({
+            children: [
+              new TableCell({
+                children: [
+                  new Paragraph({
+                    children: [new TextRun({ text: reportTitle, bold: true, size: 26, color: '1E293B' })],
+                    alignment: AlignmentType.LEFT,
+                  }),
+                ],
+                columnSpan: 2,
+                borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
+              }),
+            ],
+          }),
+          new TableRow({
+            children: [
+              new TableCell({
+                children: [
+                  new Paragraph({
+                    children: [new TextRun({ text: `Date: ${today}`, size: 22, color: '64748B' })],
+                    alignment: AlignmentType.LEFT,
+                  }),
+                ],
+                columnSpan: 2,
+                borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
+              }),
+            ],
+          }),
+        ],
+      });
+      const doc = new Document({
+        sections: [
+          {
+            properties: {},
+            children: [
+              summaryTable,
+              new Paragraph({ text: '', spacing: { after: 200 } }),
+              new Table({
+                width: { size: 100, type: WidthType.PERCENTAGE },
+                rows: [headerRow, ...dataRows],
+              }),
+            ],
+          },
+        ],
+      });
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `production-schedule-${new Date().toISOString().split('T')[0]}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
       return;
     }
     // fallback: CSV
@@ -405,13 +565,6 @@ const Scheduling: React.FC = () => {
               >
                 <Download size={16} />
                 <span>Excel</span>
-              </button>
-              <button
-                onClick={() => exportSchedule('word')}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                <Download size={16} />
-                <span>Word</span>
               </button>
               <button
                 onClick={() => exportSchedule('pdf')}

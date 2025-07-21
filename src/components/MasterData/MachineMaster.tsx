@@ -286,97 +286,58 @@ const MachineMaster: React.FC = () => {
               />
             </div>
 
-            {/* Associated Processes UI remains as previously enhanced */}
+            {/* Associated Processes UI: Only manual entry, no suggestions or dropdowns */}
             <div className="col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Associated Processes
               </label>
               <div className="flex gap-2 mb-2">
-                <select
-                  multiple
-                  value={formData.associatedProcesses?.filter(ap => ap.productId && ap.stepId).map(ap => `${ap.productId}|${ap.stepId}`) || []}
-                  onChange={e => {
-                    const selected = Array.from(e.target.selectedOptions, opt => opt.value);
-                    const selectedAssociations = selected.map(val => {
-                      const [productId, stepId] = val.split('|');
-                      return { productId, stepId };
-                    });
-                    // Keep manual processes
-                    setFormData(prev => ({
-                      ...prev,
-                      associatedProcesses: [
-                        ...(prev.associatedProcesses?.filter(ap => !ap.productId && ap.stepId) || []),
-                        ...selectedAssociations
-                      ]
-                    }));
+                <input
+                  type="text"
+                  value={manualProcessInput}
+                  onChange={e => setManualProcessInput(e.target.value)}
+                  placeholder="Add process (e.g. Cleaning, Welding, etc.)"
+                  className="w-full px-3 py-2 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/50 text-gray-900 font-medium shadow-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (manualProcessInput.trim()) {
+                      setFormData(prev => ({
+                        ...prev,
+                        associatedProcesses: [
+                          ...(prev.associatedProcesses || []),
+                          { productId: '', stepId: manualProcessInput.trim() }
+                        ]
+                      }));
+                      setManualProcessInput('');
+                    }
                   }}
-                  className="w-full px-2 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm h-32"
+                  className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 text-sm font-semibold shadow"
                 >
-                  {products.flatMap(product =>
-                    product.processFlow.map(step => (
-                      <option key={product.id + '-' + step.id} value={`${product.id}|${step.id}`}>
-                        {product.productName} — {step.stepName}
-                      </option>
-                    ))
-                  )}
-                </select>
-                <div className="flex flex-col gap-1 w-56">
-                  <input
-                    type="text"
-                    value={manualProcessInput}
-                    onChange={e => setManualProcessInput(e.target.value)}
-                    placeholder="Add manual process (e.g. Cleaning)"
-                    className="px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (manualProcessInput.trim()) {
-                        setFormData(prev => ({
-                          ...prev,
-                          associatedProcesses: [
-                            ...(prev.associatedProcesses || []),
-                            { productId: '', stepId: manualProcessInput.trim() }
-                          ]
-                        }));
-                        setManualProcessInput('');
-                      }
-                    }}
-                    className="flex items-center gap-1 px-2 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 text-xs"
-                  >
-                    <Plus size={14} /> Add Manual
-                  </button>
-                </div>
+                  <Plus size={16} /> Add
+                </button>
               </div>
-              {/* Show all associated processes (product/step or manual) with remove option */}
+              {/* Show all associated processes (manual only) with remove option */}
               <div className="flex flex-wrap gap-2 mt-2">
-                {(formData.associatedProcesses || []).map((ap, idx) => {
-                  const label = ap.productId && ap.stepId
-                    ? (() => {
-                        const product = products.find(p => p.id === ap.productId);
-                        const step = product?.processFlow.find(s => s.id === ap.stepId);
-                        return product && step ? `${product.productName} — ${step.stepName}` : ap.stepId;
-                      })()
-                    : ap.stepId;
-                  return (
-                    <span key={idx} className="inline-flex items-center gap-1 px-3 py-1 rounded-full border text-xs font-semibold bg-cyan-50 border-cyan-200 text-cyan-700">
-                      {label}
-                      <button
-                        type="button"
-                        className="ml-1 text-red-500 hover:text-red-700"
-                        onClick={() => setFormData(prev => ({
-                          ...prev,
-                          associatedProcesses: (prev.associatedProcesses || []).filter((_, i) => i !== idx)
-                        }))}
-                        title="Remove"
-                      >
-                        <X size={14} />
-                      </button>
-                    </span>
-                  );
-                })}
+                {(formData.associatedProcesses || []).map((ap, idx) => (
+                  <span key={idx} className="inline-flex items-center gap-1 px-3 py-1 rounded-full border text-xs font-semibold bg-cyan-50 border-cyan-200 text-cyan-700 shadow">
+                    {ap.stepId}
+                    <button
+                      type="button"
+                      className="ml-1 text-red-500 hover:text-red-700"
+                      onClick={() => setFormData(prev => ({
+                        ...prev,
+                        associatedProcesses: (prev.associatedProcesses || []).filter((_, i) => i !== idx)
+                      }))}
+                      title="Remove"
+                    >
+                      <X size={14} />
+                    </button>
+                  </span>
+                ))}
               </div>
-              <p className="text-xs text-gray-500 mt-1">Select or add all processes (product & step, or manual) this machine is typically used for.</p>
+              <p className="text-xs text-gray-500 mt-1">Add all processes (manual entry) this machine is typically used for. No suggestions, only manual input.</p>
             </div>
 
             <div className="flex items-end">
