@@ -183,9 +183,9 @@ export const calculateWorkingDays = (startDate: Date, endDate: Date, holidays: s
 
 export function getAutoStatus(item: ScheduleItem): ScheduleItem['status'] {
   const now = new Date();
-  const start = new Date(item.startDate);
-  const end = new Date(item.endDate);
-  if (item.status === 'completed') return 'completed';
+  const start = new Date(item.actualStartTime || item.startDate);
+  const end = new Date(item.actualEndTime || item.endDate);
+  if (item.status === 'completed' && item.actualEndTime) return 'completed';
   if (now < start) return 'scheduled';
   if (now >= start && now <= end) return 'in-progress';
   if (now > end) return 'delayed';
@@ -234,10 +234,9 @@ export function getPOTimeProgress(poId: string, scheduleItems: ScheduleItem[]): 
 export function getAutoPOStatus(po: PurchaseOrder, scheduleItems: ScheduleItem[]): PurchaseOrder['status'] {
   const items = scheduleItems.filter(item => item.poId === po.id);
   if (items.length === 0) return po.status; // fallback to current status
-  if (items.every(item => item.status === 'completed')) return 'completed';
-  if (items.some(item => item.status === 'delayed')) return 'delayed';
-  if (items.some(item => item.status === 'in-progress')) return 'in-progress';
-  // if (items.some(item => item.status === 'scheduled')) return 'scheduled'; // Not a valid PO status
+  if (items.every(item => item.status === 'completed' && item.actualEndTime)) return 'completed';
+  if (items.some(item => getAutoStatus(item) === 'delayed')) return 'delayed';
+  if (items.some(item => getAutoStatus(item) === 'in-progress')) return 'in-progress';
   return 'pending';
 }
 

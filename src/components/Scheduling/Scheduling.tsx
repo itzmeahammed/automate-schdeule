@@ -23,6 +23,12 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType, AlignmentType, HeadingLevel, BorderStyle } from 'docx';
 
+// 1. Add utility for DD/MM/YYYY
+function formatDMY(dateStr: string) {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-GB');
+}
+
 const Scheduling: React.FC = () => {
   const { 
     purchaseOrders, 
@@ -160,24 +166,23 @@ const Scheduling: React.FC = () => {
         'Product': product?.productName || 'Unknown',
         'Part Number': product?.partNumber || 'N/A',
         'Machine': machine?.machineName || 'Unknown',
-        'Start Date': new Date(item.startDate).toLocaleString(),
-        'End Date': new Date(item.endDate).toLocaleString(),
+        'Start Date': formatDMY(item.actualStartTime || item.startDate),
+        'End Date': formatDMY(item.actualEndTime || item.endDate),
         'Quantity': item.quantity,
         'Process Step': item.processStep,
         'Allocated Time': `${item.allocatedTime} minutes`,
-        'Status': item.status,
+        'Status': getAutoStatus(item),
         'Efficiency': `${item.efficiency}%`,
         'Quality Score': item.qualityScore || 'N/A',
         'Notes': item.notes || ''
       };
     });
-    const today = new Date().toLocaleDateString();
+    const today = formatDMY(new Date().toISOString());
     const company = user?.name || 'Manufacturing Company';
     const reportTitle = 'Production Schedule Report';
     // --- Excel ---
     if (format === 'excel') {
       const ws = XLSX.utils.json_to_sheet(data);
-      // Style header row
       const header = Object.keys(data[0] || {});
       header.forEach((h, idx) => {
         const cell = XLSX.utils.encode_cell({ r: 0, c: idx });
@@ -185,7 +190,7 @@ const Scheduling: React.FC = () => {
         ws[cell].s = {
           font: { bold: true, color: { rgb: 'FFFFFF' } },
           fill: { fgColor: { rgb: '2563EB' } },
-          alignment: { horizontal: 'center' },
+          alignment: { horizontal: 'center', vertical: 'center' },
           border: {
             top: { style: 'thin', color: { rgb: '2563EB' } },
             bottom: { style: 'thin', color: { rgb: '2563EB' } },
@@ -200,8 +205,18 @@ const Scheduling: React.FC = () => {
       XLSX.utils.sheet_add_aoa(ws, [[`Date: ${today}`, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A3' });
       // Move data down by 3 rows
       XLSX.utils.sheet_add_json(ws, data, { origin: 'A5', skipHeader: false });
-      // Set column widths
-      ws['!cols'] = header.map(() => ({ wch: 18 }));
+      // Set alternating row colors
+      for (let r = 1; r <= data.length; r++) {
+        header.forEach((h, c) => {
+          const cell = XLSX.utils.encode_cell({ r, c });
+          if (!ws[cell]) return;
+          ws[cell].s = {
+            fill: { fgColor: { rgb: r % 2 === 0 ? 'FFFFFF' : 'F3F6FD' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        });
+      }
+      ws['!cols'] = header.map(() => ({ wch: 22 }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
       XLSX.writeFile(wb, `production-schedule-${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -209,29 +224,36 @@ const Scheduling: React.FC = () => {
     }
     // --- PDF ---
     if (format === 'pdf') {
-      const doc = new jsPDF();
+      const doc = new jsPDF({ orientation: 'landscape' });
       doc.setFontSize(18);
       doc.setTextColor(37, 99, 235);
-      doc.text(company, 10, 15);
+      doc.text(company, 14, 14);
       doc.setFontSize(14);
       doc.setTextColor(30, 41, 59);
-      doc.text(reportTitle, 10, 25);
-      doc.setFontSize(10);
+      doc.text(reportTitle, 14, 22);
+      doc.setFontSize(11);
       doc.setTextColor(100, 116, 139);
-      doc.text(`Date: ${today}`, 10, 32);
+      doc.text(`Date: ${today}`, 14, 30);
       if (data.length === 0) {
-        doc.text('No schedule data available.', 10, 45);
+        doc.text('No schedule data available.', 14, 45);
       } else {
+        const header = Object.keys(data[0]);
         autoTable(doc, {
-          startY: 38,
-          head: [Object.keys(data[0])],
-          body: data.map(row => Object.values(row)),
-          styles: { fontSize: 9, cellPadding: 2 },
-          headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' },
+          startY: 36,
+          head: [header],
+          body: data.map(row => header.map(h => (row as Record<string, any>)[h])),
+          styles: { fontSize: 11, cellPadding: 4, valign: 'middle', halign: 'center' },
+          headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 13, halign: 'center' },
           alternateRowStyles: { fillColor: [239, 246, 255] },
           margin: { left: 10, right: 10 },
           tableLineColor: [37, 99, 235],
-          tableLineWidth: 0.2,
+          tableLineWidth: 0.3,
+          rowPageBreak: 'avoid',
+          didDrawCell: (data) => {
+            if (data.section === 'body' && data.row.index % 2 === 0) {
+              data.cell.styles.fillColor = [255, 255, 255];
+            }
+          },
         });
       }
       doc.save(`production-schedule-${new Date().toISOString().split('T')[0]}.pdf`);

@@ -672,8 +672,8 @@ const Reports: React.FC = () => {
                                 <td className="px-2 py-1">{item.allocatedTime} min</td>
                                 <td className="px-2 py-1">{item.efficiency}%</td>
                                 <td className="px-2 py-1">{item.qualityScore}</td>
-                                <td className="px-2 py-1 whitespace-nowrap">{new Date(item.startDate).toLocaleString()}</td>
-                                <td className="px-2 py-1 whitespace-nowrap">{new Date(item.endDate).toLocaleString()}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{new Date(item.actualStartTime || item.startDate).toLocaleString()}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{new Date(item.actualEndTime || item.endDate).toLocaleString()}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -692,6 +692,94 @@ const Reports: React.FC = () => {
     </div>
   );
 
+  // 1. Add utility for DD/MM/YYYY
+  function formatDMY(dateStr: string) {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-GB');
+  }
+
+  // 2. Add exportDetailedReport function
+  const exportDetailedReport = async (format: 'pdf' | 'excel') => {
+    // Prepare data
+    const detailedData = purchaseOrders.map(po => {
+      const product = products.find(p => p.id === po.productId);
+      return {
+        'PO Number': po.poNumber,
+        'Product': product?.productName || 'Unknown',
+        'Quantity': po.quantity,
+        'Status': getAutoPOStatus(po, scheduleItems),
+        'Delivery Date': formatDMY(po.deliveryDate),
+      };
+    });
+    const headers = Object.keys(detailedData[0] || {});
+    // --- PDF ---
+    if (format === 'pdf') {
+      const doc = new jsPDF({ orientation: 'landscape' });
+      doc.setFontSize(18);
+      doc.setTextColor(37, 99, 235);
+      doc.text('Production Schedule Detailed Report', 14, 14);
+      doc.setFontSize(12);
+      doc.setTextColor(30, 41, 59);
+      doc.text(`Date: ${formatDMY(new Date().toISOString())}`, 14, 22);
+      autoTable(doc, {
+        startY: 28,
+        head: [headers],
+        body: detailedData.map(row => headers.map(h => (row as Record<string, any>)[h])),
+        styles: { fontSize: 11, cellPadding: 4, valign: 'middle', halign: 'center' },
+        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 13, halign: 'center' },
+        alternateRowStyles: { fillColor: [239, 246, 255] },
+        margin: { left: 10, right: 10 },
+        tableLineColor: [37, 99, 235],
+        tableLineWidth: 0.3,
+        rowPageBreak: 'avoid',
+        didDrawCell: (data) => {
+          if (data.section === 'body' && data.row.index % 2 === 0) {
+            data.cell.styles.fillColor = [255, 255, 255];
+          }
+        },
+      });
+      doc.save(`detailed-report-${new Date().toISOString().split('T')[0]}.pdf`);
+      return;
+    }
+    // --- Excel ---
+    if (format === 'excel') {
+      const ws = XLSX.utils.json_to_sheet(detailedData);
+      // Style header row
+      headers.forEach((h, idx) => {
+        const cell = XLSX.utils.encode_cell({ r: 0, c: idx });
+        if (!ws[cell]) ws[cell] = { t: 's', v: h };
+        ws[cell].s = {
+          font: { bold: true, color: { rgb: 'FFFFFF' } },
+          fill: { fgColor: { rgb: '2563EB' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: {
+            top: { style: 'thin', color: { rgb: '2563EB' } },
+            bottom: { style: 'thin', color: { rgb: '2563EB' } },
+            left: { style: 'thin', color: { rgb: '2563EB' } },
+            right: { style: 'thin', color: { rgb: '2563EB' } },
+          },
+        };
+      });
+      // Set alternating row colors
+      for (let r = 1; r <= detailedData.length; r++) {
+        headers.forEach((h, c) => {
+          const cell = XLSX.utils.encode_cell({ r, c });
+          if (!ws[cell]) return;
+          ws[cell].s = {
+            fill: { fgColor: { rgb: r % 2 === 0 ? 'FFFFFF' : 'F3F6FD' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        });
+      }
+      ws['!cols'] = headers.map(() => ({ wch: 22 }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Detailed Report');
+      XLSX.writeFile(wb, `detailed-report-${new Date().toISOString().split('T')[0]}.xlsx`);
+      return;
+    }
+  };
+
+  // 3. Add buttons for detailed report export in the UI
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
       <div className="flex justify-between items-center mb-6">
@@ -716,6 +804,23 @@ const Reports: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* <div className="flex gap-2 mt-2">
+        <button
+          onClick={() => exportDetailedReport('pdf')}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-700 text-white rounded-md hover:bg-blue-800 transition-colors"
+        >
+          <Download size={16} />
+          Download Detailed PDF
+        </button>
+        <button
+          onClick={() => exportDetailedReport('excel')}
+          className="flex items-center gap-2 px-4 py-2 bg-green-700 text-white rounded-md hover:bg-green-800 transition-colors"
+        >
+          <Download size={16} />
+          Download Detailed Excel
+        </button>
+      </div> */}
 
       {/* Report Type Selection */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
