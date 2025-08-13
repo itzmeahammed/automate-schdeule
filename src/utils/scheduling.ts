@@ -1,15 +1,42 @@
 import { Machine, Product, PurchaseOrder, ScheduleItem, Shift, Alert } from '../types';
 
+// Helper function to calculate working hours from shift timing
+export const calculateWorkingHoursFromShift = (shiftTiming: string): number => {
+  if (shiftTiming === 'Custom') return 8; // Default for custom shifts
+  
+  const [start, end] = shiftTiming.split('-');
+  if (!start || !end) return 8;
+  
+  const startTime = new Date(`2000-01-01T${start}:00`);
+  const endTime = new Date(`2000-01-01T${end}:00`);
+  
+  // Handle overnight shifts
+  if (endTime < startTime) {
+    endTime.setDate(endTime.getDate() + 1);
+  }
+  
+  const diffMs = endTime.getTime() - startTime.getTime();
+  const diffHours = diffMs / (1000 * 60 * 60);
+  
+  return Math.round(diffHours * 10) / 10; // Round to 1 decimal place
+};
+
 export const calculateMachineCapacity = (machine: Machine, date: string, shifts: Shift[]): number => {
   const activeShifts = shifts.filter(shift => shift.isActive);
   let totalCapacity = 0;
 
-  activeShifts.forEach(shift => {
-    const shiftDuration = calculateShiftDuration(shift);
-    const breakTime = shift.breakTimes.reduce((total, breakTime) => total + breakTime.duration, 0);
-    const effectiveTime = shiftDuration - breakTime;
-    totalCapacity += effectiveTime * (machine.efficiency / 100);
-  });
+  if (activeShifts.length > 0) {
+    activeShifts.forEach(shift => {
+      const shiftDuration = calculateShiftDuration(shift);
+      const breakTime = shift.breakTimes.reduce((total, breakTime) => total + breakTime.duration, 0);
+      const effectiveTime = shiftDuration - breakTime;
+      totalCapacity += effectiveTime * (machine.efficiency / 100);
+    });
+  } else {
+    // If no shifts defined, calculate from machine's shift timing
+    const workingHours = calculateWorkingHoursFromShift(machine.shiftTiming);
+    totalCapacity = workingHours * 60 * (machine.efficiency / 100);
+  }
 
   return totalCapacity;
 };
@@ -87,9 +114,9 @@ export const checkDeliveryFeasibility = (
   product.processFlow.forEach(step => {
     const machine = machines.find(m => m.id === step.machineId);
     if (machine && (machine.status === 'active' || machine.status === 'idle')) {
-      // If no active shifts, treat as available for the whole day (1440 min)
+      // If no active shifts, calculate from machine's shift timing
       const activeShifts = shifts.filter(shift => shift.isActive);
-      const dailyCapacity = activeShifts.length > 0 ? calculateMachineCapacity(machine, po.poDate, shifts) : 1440;
+      const dailyCapacity = activeShifts.length > 0 ? calculateMachineCapacity(machine, po.poDate, shifts) : (calculateWorkingHoursFromShift(machine.shiftTiming) * 60);
       const totalCapacity = dailyCapacity * workingDays;
       // Calculate existing utilization
       const existingUtilization = existingSchedule
@@ -137,25 +164,44 @@ export const checkDeliveryFeasibility = (
       alternatives
     };
   } else {
-    const requiredDays = Math.ceil(productionTime / (totalAvailableTime / workingDays));
-    const suggestedDate = new Date(poDate);
-    suggestedDate.setDate(suggestedDate.getDate() + requiredDays + holidays.length);
-    if (isNaN(suggestedDate.getTime())) {
+    // Start from the requested delivery date, search forward for the first feasible date
+    let testDate = new Date(deliveryDate);
+    let found = false;
+    let maxTries = 365; // avoid infinite loop
+    let suggestedDate = null;
+    while (!found && maxTries-- > 0) {
+      const workingDays = calculateWorkingDays(poDate, testDate, holidays);
+      const totalCapacity = (() => {
+        let total = 0;
+        product.processFlow.forEach(step => {
+          const machine = machines.find(m => m.id === step.machineId);
+          if (machine && (machine.status === 'active' || machine.status === 'idle')) {
+            const activeShifts = shifts.filter(shift => shift.isActive);
+            const dailyCapacity = activeShifts.length > 0 ? calculateMachineCapacity(machine, po.poDate, shifts) : (calculateWorkingHoursFromShift(machine.shiftTiming) * 60);
+            total += dailyCapacity * workingDays;
+          }
+        });
+        return total;
+      })();
+      if (productionTime <= totalCapacity && workingDays > 0) {
+        found = true;
+        suggestedDate = new Date(testDate);
+      } else {
+        testDate.setDate(testDate.getDate() + 1);
+      }
+    }
+    if (!suggestedDate) {
       return {
         feasible: false,
-        message: 'Delivery date not feasible and could not calculate a suggested date due to invalid input.',
+        message: 'Unable to calculate a feasible delivery date within a year.',
         confidence: 0,
         alternatives
       };
     }
-    alternatives.push('Add overtime shifts or weekend work');
-    alternatives.push('Outsource some operations to external vendors');
-    alternatives.push('Negotiate with customer for extended delivery date');
-    alternatives.push('Prioritize this order over lower priority orders');
     return {
       feasible: false,
-      suggestedDate: suggestedDate.toISOString().split('T')[0],
-      message: `Delivery date not feasible. Required capacity: ${productionTime.toFixed(0)} min, Available: ${totalAvailableTime.toFixed(0)} min. Suggested date: ${suggestedDate.toDateString()}`,
+      suggestedDate: suggestedDate.toISOString().slice(0, 10),
+      message: `Not feasible by requested date. Earliest possible: ${suggestedDate.toISOString().slice(0, 10)}`,
       confidence: 0,
       alternatives
     };
@@ -273,12 +319,15 @@ export const generateScheduleWithConflicts = (
       return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime();
     });
 
-  // Machine availability tracking
+  // Machine availability tracking - start from current date
   const machineAvailability: { [machineId: string]: Date } = {};
   const machineAssignments: { [machineId: string]: ScheduleItem[] } = {};
+  const currentDate = new Date();
+  currentDate.setHours(9, 0, 0, 0); // Start at 9 AM by default
+  
   machines.forEach(machine => {
     if (machine.status === 'active') {
-      machineAvailability[machine.id] = new Date();
+      machineAvailability[machine.id] = new Date(currentDate);
       machineAssignments[machine.id] = [];
     }
   });
@@ -286,36 +335,51 @@ export const generateScheduleWithConflicts = (
   sortedPOs.forEach(po => {
     const product = products.find(p => p.id === po.productId);
     if (!product) return;
-    let currentStartTime = new Date();
+    
+    // Start from the earliest available machine time
+    let globalStartTime = new Date(Math.min(...Object.values(machineAvailability).map(date => date.getTime())));
+    
     product.processFlow
       .sort((a, b) => a.sequence - b.sequence)
       .forEach((step, index) => {
         const machine = machines.find(m => m.id === step.machineId);
         if (!machine || machine.status !== 'active') return;
+        
         const setupTime = step.setupTime || 0;
         const cycleTime = step.cycleTimePerPart * po.quantity;
         const totalTime = setupTime + cycleTime;
-        // Ensure strict sequential processing: next step starts after previous ends
-        const prevStepEnd = currentStartTime;
-        const startDate = findNextAvailableSlot(
-          prevStepEnd,
+        
+        // Calculate start date considering shift timing and machine availability
+        const startDate = calculateShiftBasedStartDate(
+          machine,
+          machineAvailability[machine.id] || globalStartTime,
           totalTime,
           shifts,
           holidays
         );
-        const endDate = new Date(startDate.getTime() + totalTime * 60000);
-        // Update currentStartTime for next step
-        currentStartTime = new Date(endDate);
-        // Check for conflicts: is this machine already assigned to a lower-priority PO in this time window?
+        
+        // Calculate end date based on shift timing (not 24-hour continuous)
+        const endDate = calculateShiftBasedEndDate(
+          machine,
+          startDate,
+          totalTime,
+          shifts,
+          holidays
+        );
+        
+        // Update machine availability for next operation
+        machineAvailability[machine.id] = new Date(endDate);
+        
+        // Check for conflicts
         const conflictsForMachine = (machineAssignments[step.machineId] || []).filter(item => {
           const itemStart = new Date(item.startDate);
           const itemEnd = new Date(item.endDate);
-          // Overlap check
           return (
             (startDate < itemEnd && endDate > itemStart) &&
             priorityOrder[po.priority] > priorityOrder[purchaseOrders.find(p => p.id === item.poId)?.priority || 'low']
           );
         });
+        
         if (conflictsForMachine.length > 0) {
           conflictsForMachine.forEach(conflictingItem => {
             const conflictingPO = purchaseOrders.find(p => p.id === conflictingItem.poId);
@@ -339,13 +403,14 @@ export const generateScheduleWithConflicts = (
                   qualityScore: 0,
                   notes: step.isOutsourced ? 'Outsourced operation' : ''
                 },
-                userMessage: '', // Initialize
-                suggestedEndDate: '' // Initialize
+                userMessage: '',
+                suggestedEndDate: ''
               });
             }
           });
         }
-        const baseScheduleItem: ScheduleItem = {
+        
+        const scheduleItem: ScheduleItem = {
           id: `${po.id}-${step.machineId}-${step.sequence}`,
           poId: po.id,
           machineId: step.machineId,
@@ -360,14 +425,9 @@ export const generateScheduleWithConflicts = (
           qualityScore: 0,
           notes: step.isOutsourced ? 'Outsourced operation' : ''
         };
-        const scheduleItem = {
-          ...baseScheduleItem,
-          status: getAutoStatus(baseScheduleItem)
-        };
+        
         schedule.push(scheduleItem);
         machineAssignments[step.machineId].push(scheduleItem);
-        machineAvailability[step.machineId] = endDate;
-        // currentStartTime = endDate; // This line is removed as per the new_code
       });
   });
 
@@ -513,6 +573,155 @@ export const getNextShiftStart = (currentTime: Date, shifts: Shift[]): Date => {
   return earliestShift || nextDay;
 };
 
+// Helper function to calculate start date based on shift timing
+export const calculateShiftBasedStartDate = (
+  machine: Machine,
+  earliestStart: Date,
+  durationMinutes: number,
+  shifts: Shift[],
+  holidays: string[]
+): Date => {
+  const activeShifts = shifts.filter(shift => shift.isActive);
+  let currentDate = new Date(earliestStart);
+  
+  // If no shifts defined, use machine's shift timing
+  if (activeShifts.length === 0) {
+    const [startHour, startMinute] = machine.shiftTiming.split('-')[0].split(':').map(Number);
+    currentDate.setHours(startHour, startMinute, 0, 0);
+    
+    // Skip weekends and holidays
+    while (currentDate.getDay() === 0 || currentDate.getDay() === 6 || 
+           holidays.includes(currentDate.toISOString().split('T')[0])) {
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    return currentDate;
+  }
+  
+  // Find next available shift start
+  while (true) {
+    const dayOfWeek = currentDate.getDay();
+    const dateString = currentDate.toISOString().split('T')[0];
+    
+    // Skip weekends and holidays
+    if (dayOfWeek === 0 || dayOfWeek === 6 || holidays.includes(dateString)) {
+      currentDate.setDate(currentDate.getDate() + 1);
+      continue;
+    }
+    
+    // Find applicable shift for current time
+    const currentShift = findCurrentShift(currentDate, activeShifts);
+    if (currentShift) {
+      return currentDate;
+    }
+    
+    // Move to next shift start
+    const nextShift = getNextShiftStart(currentDate, activeShifts);
+    currentDate = nextShift;
+  }
+};
+
+// Helper function to calculate end date based on shift timing
+export const calculateShiftBasedEndDate = (
+  machine: Machine,
+  startDate: Date,
+  durationMinutes: number,
+  shifts: Shift[],
+  holidays: string[]
+): Date => {
+  const activeShifts = shifts.filter(shift => shift.isActive);
+  let remainingDuration = durationMinutes;
+  let currentTime = new Date(startDate);
+  
+  // If no shifts defined, use machine's shift timing
+  if (activeShifts.length === 0) {
+    const [startHour, startMinute] = machine.shiftTiming.split('-')[0].split(':').map(Number);
+    const [endHour, endMinute] = machine.shiftTiming.split('-')[1].split(':').map(Number);
+    
+    while (remainingDuration > 0) {
+      const dayOfWeek = currentTime.getDay();
+      const dateString = currentTime.toISOString().split('T')[0];
+      
+      // Skip weekends and holidays
+      if (dayOfWeek === 0 || dayOfWeek === 6 || holidays.includes(dateString)) {
+        currentTime.setDate(currentTime.getDate() + 1);
+        currentTime.setHours(startHour, startMinute, 0, 0);
+        continue;
+      }
+      
+      // Calculate available time in current shift
+      const shiftStart = new Date(currentTime);
+      shiftStart.setHours(startHour, startMinute, 0, 0);
+      
+      let shiftEnd = new Date(currentTime);
+      shiftEnd.setHours(endHour, endMinute, 0, 0);
+      
+      // Handle overnight shifts
+      if (endHour < startHour) {
+        shiftEnd.setDate(shiftEnd.getDate() + 1);
+      }
+      
+      const availableTime = Math.min(
+        remainingDuration,
+        (shiftEnd.getTime() - currentTime.getTime()) / (1000 * 60)
+      );
+      
+      remainingDuration -= availableTime;
+      
+      if (remainingDuration > 0) {
+        // Move to next day
+        currentTime.setDate(currentTime.getDate() + 1);
+        currentTime.setHours(startHour, startMinute, 0, 0);
+      } else {
+        currentTime.setTime(currentTime.getTime() + availableTime * 60000);
+      }
+    }
+    
+    return currentTime;
+  }
+  
+  // Use active shifts
+  while (remainingDuration > 0) {
+    const dayOfWeek = currentTime.getDay();
+    const dateString = currentTime.toISOString().split('T')[0];
+    
+    // Skip weekends and holidays
+    if (dayOfWeek === 0 || dayOfWeek === 6 || holidays.includes(dateString)) {
+      currentTime.setDate(currentTime.getDate() + 1);
+      currentTime.setHours(0, 0, 0, 0);
+      continue;
+    }
+    
+    // Find applicable shift for current time
+    const currentShift = findCurrentShift(currentTime, activeShifts);
+    if (!currentShift) {
+      // Move to next shift start
+      const nextShift = getNextShiftStart(currentTime, activeShifts);
+      currentTime = nextShift;
+      continue;
+    }
+    
+    // Calculate available time in current shift
+    const shiftEnd = getShiftEndTime(currentTime, currentShift);
+    const availableTime = Math.min(
+      remainingDuration,
+      (shiftEnd.getTime() - currentTime.getTime()) / (1000 * 60)
+    );
+    
+    remainingDuration -= availableTime;
+    
+    if (remainingDuration > 0) {
+      // Move to next shift
+      const nextShift = getNextShiftStart(shiftEnd, activeShifts);
+      currentTime = nextShift;
+    } else {
+      currentTime.setTime(currentTime.getTime() + availableTime * 60000);
+    }
+  }
+  
+  return currentTime;
+};
+
 export const generateAlerts = (
   purchaseOrders: PurchaseOrder[],
   products: Product[],
@@ -578,10 +787,10 @@ export const generateAlerts = (
   });
 
   Object.entries(machineUtilization).forEach(([machineId, utilization]) => {
-    const machine = machines.find(m => m.id === machineId);
-    if (machine) {
-      const dailyCapacity = machine.workingHours * 60;
-      const utilizationPercentage = (utilization / (dailyCapacity * 7)) * 100; // Weekly utilization
+         const machine = machines.find(m => m.id === machineId);
+     if (machine) {
+       const dailyCapacity = calculateWorkingHoursFromShift(machine.shiftTiming) * 60;
+       const utilizationPercentage = (utilization / (dailyCapacity * 7)) * 100; // Weekly utilization
       
       if (utilizationPercentage > 90) {
         alerts.push({
@@ -633,10 +842,10 @@ export const getDashboardMetrics = (
     item.actualEndTime?.startsWith(today)
   ).length;
 
-  // Calculate machine utilization
-  const totalCapacity = machines.reduce((total, machine) => {
-    return total + (machine.workingHours * 60 * (machine.status === 'active' ? 1 : 0));
-  }, 0);
+     // Calculate machine utilization
+   const totalCapacity = machines.reduce((total, machine) => {
+     return total + (calculateWorkingHoursFromShift(machine.shiftTiming) * 60 * (machine.status === 'active' ? 1 : 0));
+   }, 0);
 
   const totalUtilized = scheduleItems.reduce((total, item) => {
     return total + item.allocatedTime;

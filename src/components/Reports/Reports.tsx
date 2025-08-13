@@ -35,32 +35,100 @@ const Reports: React.FC = () => {
     const company = user?.name || 'Manufacturing Company';
     const reportTitle = 'Manufacturing Report';
     if (format === 'excel') {
-      const ws = XLSX.utils.aoa_to_sheet(tableData);
-      // Style header row
-      const header = ['Field', 'Value'];
-      header.forEach((h, idx) => {
-        const cell = XLSX.utils.encode_cell({ r: 0, c: idx });
-        if (!ws[cell]) ws[cell] = { t: 's', v: h };
-        ws[cell].s = {
-          font: { bold: true, color: { rgb: 'FFFFFF' } },
-          fill: { fgColor: { rgb: '2563EB' } },
-          alignment: { horizontal: 'center' },
-          border: {
-            top: { style: 'thin', color: { rgb: '2563EB' } },
-            bottom: { style: 'thin', color: { rgb: '2563EB' } },
-            left: { style: 'thin', color: { rgb: '2563EB' } },
-            right: { style: 'thin', color: { rgb: '2563EB' } },
-          },
-        };
-      });
-      // Add a summary row at the top
+      // Create a new worksheet
+      const ws = XLSX.utils.aoa_to_sheet([]);
+      
+      // Add company header (spanning both columns)
       XLSX.utils.sheet_add_aoa(ws, [[company, '']], { origin: 'A1' });
+      
+      // Add report title (spanning both columns)
       XLSX.utils.sheet_add_aoa(ws, [[reportTitle, '']], { origin: 'A2' });
+      
+      // Add date (spanning both columns)
       XLSX.utils.sheet_add_aoa(ws, [[`Date: ${today}`, '']], { origin: 'A3' });
-      // Move data down by 3 rows
+      
+      // Add empty row for spacing
+      XLSX.utils.sheet_add_aoa(ws, [['', '']], { origin: 'A4' });
+      
+      // Add column headers
       XLSX.utils.sheet_add_aoa(ws, [['Field', 'Value']], { origin: 'A5' });
+      
+      // Add data rows
       XLSX.utils.sheet_add_aoa(ws, tableData, { origin: 'A6' });
+      
+      // Style the company header (row 1)
+      for (let c = 0; c < 2; c++) {
+        const cell = XLSX.utils.encode_cell({ r: 0, c });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { bold: true, size: 16, color: { rgb: '2563EB' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        }
+      }
+      
+      // Style the report title (row 2)
+      for (let c = 0; c < 2; c++) {
+        const cell = XLSX.utils.encode_cell({ r: 1, c });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { bold: true, size: 14, color: { rgb: '1E293B' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        }
+      }
+      
+      // Style the date (row 3)
+      for (let c = 0; c < 2; c++) {
+        const cell = XLSX.utils.encode_cell({ r: 2, c });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { size: 12, color: { rgb: '64748B' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        }
+      }
+      
+      // Style the column headers (row 5)
+      ['Field', 'Value'].forEach((h, idx) => {
+        const cell = XLSX.utils.encode_cell({ r: 4, c: idx });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { bold: true, color: { rgb: 'FFFFFF' } },
+            fill: { fgColor: { rgb: '2563EB' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+            border: {
+              top: { style: 'thin', color: { rgb: '2563EB' } },
+              bottom: { style: 'thin', color: { rgb: '2563EB' } },
+              left: { style: 'thin', color: { rgb: '2563EB' } },
+              right: { style: 'thin', color: { rgb: '2563EB' } },
+            },
+          };
+        }
+      });
+      
+      // Style data rows with alternating colors
+      for (let r = 0; r < tableData.length; r++) {
+        for (let c = 0; c < 2; c++) {
+          const cell = XLSX.utils.encode_cell({ r: r + 5, c });
+          if (ws[cell]) {
+            ws[cell].s = {
+              fill: { fgColor: { rgb: r % 2 === 0 ? 'FFFFFF' : 'F8FAFC' } },
+              alignment: { horizontal: 'center', vertical: 'center' },
+              border: {
+                top: { style: 'thin', color: { rgb: 'E2E8F0' } },
+                bottom: { style: 'thin', color: { rgb: 'E2E8F0' } },
+                left: { style: 'thin', color: { rgb: 'E2E8F0' } },
+                right: { style: 'thin', color: { rgb: 'E2E8F0' } },
+              },
+            };
+          }
+        }
+      }
+      
+      // Set column widths
       ws['!cols'] = [{ wch: 28 }, { wch: 28 }];
+      
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Report');
       XLSX.writeFile(wb, `manufacturing-report-${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -386,7 +454,7 @@ const Reports: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Order Status Distribution</h3>
+        <h3 className="text-lg font-medium text-gray-900 mb-4">Sales Order Status Distribution</h3>
         <div className="space-y-3">
           {['pending', 'in-progress', 'completed', 'delayed'].map(status => {
             const count = purchaseOrders.filter(po => po.status === status).length;
@@ -419,14 +487,14 @@ const Reports: React.FC = () => {
     <div className="space-y-6">
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
         <div className="p-6 border-b border-gray-200">
-          <h3 className="text-lg font-medium text-gray-900">Purchase Orders Detail</h3>
+          <h3 className="text-lg font-medium text-gray-900">Sales Orders Detail</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  PO Number
+                  SO Number
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Product
@@ -448,7 +516,7 @@ const Reports: React.FC = () => {
                 return (
                   <tr key={po.id}>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {po.poNumber}
+                      SO #{po.poNumber}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {product?.productName || 'Unknown'}
@@ -611,28 +679,28 @@ const Reports: React.FC = () => {
           </div>
               )}
         </div>
-        {/* Related POs Section */}
+        {/* Related SOs Section */}
         <div className="bg-blue-50 rounded-xl p-4 mt-4">
-          <h5 className="font-semibold text-blue-800 mb-2 flex items-center gap-2"><Package size={16} /> Related Purchase Orders</h5>
+          <h5 className="font-semibold text-blue-800 mb-2 flex items-center gap-2"><Package size={16} /> Related Sales Orders</h5>
           {(() => {
             // Get all schedule items for this machine
             const machineScheduleItems = scheduleItems.filter(item => item.machineId === machine.id);
-            // Get unique PO IDs
-            const poIds = [...new Set(machineScheduleItems.map(item => item.poId))];
-            // Get all related POs
-            const relatedPOs = purchaseOrders.filter(po => poIds.includes(po.id));
-            if (relatedPOs.length === 0) {
-              return <div className="text-gray-400 text-sm">No POs found for this machine.</div>;
-            }
-            return (
-              <div className="space-y-3">
-                {relatedPOs.map(po => {
-                  const product = products.find(p => p.id === po.productId);
-                  const poSchedule = machineScheduleItems.filter(item => item.poId === po.id);
+                    // Get unique SO IDs
+        const soIds = [...new Set(machineScheduleItems.map(item => item.poId))];
+        // Get all related SOs
+        const relatedSOs = purchaseOrders.filter(po => soIds.includes(po.id));
+        if (relatedSOs.length === 0) {
+          return <div className="text-gray-400 text-sm">No SOs found for this machine.</div>;
+        }
+        return (
+          <div className="space-y-3">
+            {relatedSOs.map(po => {
+              const product = products.find(p => p.id === po.productId);
+              const soSchedule = machineScheduleItems.filter(item => item.poId === po.id);
                   return (
                     <div key={po.id} className="bg-white rounded-lg shadow-sm border border-blue-100 p-3">
                       <div className="flex flex-wrap items-center gap-3 mb-1">
-                        <span className="font-bold text-blue-900">PO #{po.poNumber}</span>
+                        <span className="font-bold text-blue-900">SO #{po.poNumber}</span>
                         <span className="text-xs text-gray-500">{product?.productName || 'Unknown Product'}</span>
                         <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${
                           getAutoPOStatus(po, scheduleItems) === 'completed' ? 'bg-green-100 text-green-800 border-green-300' :
@@ -657,7 +725,7 @@ const Reports: React.FC = () => {
                             </tr>
                           </thead>
                           <tbody>
-                            {poSchedule.map(item => (
+                            {soSchedule.map(item => (
                               <tr key={item.id} className="border-b hover:bg-blue-50">
                                 <td className="px-2 py-1">{item.processStep}</td>
                                 <td className="px-2 py-1">
@@ -692,23 +760,35 @@ const Reports: React.FC = () => {
     </div>
   );
 
-  // 1. Add utility for DD/MM/YYYY
-  function formatDMY(dateStr: string) {
+  // Add utility for DD/MM/YYYY HH:mm
+  function formatDMYHM(dateStr: string) {
     const d = new Date(dateStr);
-    return d.toLocaleDateString('en-GB');
+    return d.toLocaleDateString('en-GB') + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   }
 
   // 2. Add exportDetailedReport function
   const exportDetailedReport = async (format: 'pdf' | 'excel') => {
-    // Prepare data
-    const detailedData = purchaseOrders.map(po => {
-      const product = products.find(p => p.id === po.productId);
+    // Prepare data - export each schedule item (process step) as a separate row
+    const detailedData = scheduleItems.map(item => {
+      const product = products.find(p => p.id === item.productId);
+      const machine = machines.find(m => m.id === item.machineId);
+      const po = purchaseOrders.find(p => p.id === item.poId);
+      
       return {
-        'PO Number': po.poNumber,
+        'SO Number': po?.poNumber || 'N/A',
         'Product': product?.productName || 'Unknown',
-        'Quantity': po.quantity,
-        'Status': getAutoPOStatus(po, scheduleItems),
-        'Delivery Date': formatDMY(po.deliveryDate),
+        'Part Number': product?.partNumber || 'N/A',
+        'Process Step': item.processStep,
+        'Machine': machine?.machineName || 'Unknown',
+        'Machine Type': machine?.machineType || 'N/A',
+        'Start Date': formatDMYHM(item.actualStartTime || item.startDate),
+        'End Date': formatDMYHM(item.actualEndTime || item.endDate),
+        'Quantity': item.quantity,
+        'Allocated Time (min)': item.allocatedTime,
+        'Status': item.status,
+        'Efficiency (%)': item.efficiency,
+        'Quality Score': item.qualityScore,
+        'Notes': item.notes || ''
       };
     });
     const headers = Object.keys(detailedData[0] || {});
@@ -720,13 +800,13 @@ const Reports: React.FC = () => {
       doc.text('Production Schedule Detailed Report', 14, 14);
       doc.setFontSize(12);
       doc.setTextColor(30, 41, 59);
-      doc.text(`Date: ${formatDMY(new Date().toISOString())}`, 14, 22);
+      doc.text(`Date: ${formatDMYHM(new Date().toISOString())}`, 14, 22);
       autoTable(doc, {
         startY: 28,
         head: [headers],
         body: detailedData.map(row => headers.map(h => (row as Record<string, any>)[h])),
-        styles: { fontSize: 11, cellPadding: 4, valign: 'middle', halign: 'center' },
-        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 13, halign: 'center' },
+        styles: { fontSize: 8, cellPadding: 2, valign: 'middle', halign: 'center' },
+        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 10, halign: 'center' },
         alternateRowStyles: { fillColor: [239, 246, 255] },
         margin: { left: 10, right: 10 },
         tableLineColor: [37, 99, 235],
@@ -743,7 +823,7 @@ const Reports: React.FC = () => {
     }
     // --- Excel ---
     if (format === 'excel') {
-      const ws = XLSX.utils.json_to_sheet(detailedData);
+      const ws = XLSX.utils.json_to_sheet(detailedData, { skipHeader: false });
       // Style header row
       headers.forEach((h, idx) => {
         const cell = XLSX.utils.encode_cell({ r: 0, c: idx });
@@ -771,7 +851,22 @@ const Reports: React.FC = () => {
           };
         });
       }
-      ws['!cols'] = headers.map(() => ({ wch: 22 }));
+      ws['!cols'] = [
+        { wch: 15 }, // SO Number
+        { wch: 25 }, // Product
+        { wch: 15 }, // Part Number
+        { wch: 12 }, // Process Step
+        { wch: 20 }, // Machine
+        { wch: 15 }, // Machine Type
+        { wch: 18 }, // Start Date
+        { wch: 18 }, // End Date
+        { wch: 10 }, // Quantity
+        { wch: 18 }, // Allocated Time
+        { wch: 12 }, // Status
+        { wch: 15 }, // Efficiency
+        { wch: 15 }, // Quality Score
+        { wch: 30 }  // Notes
+      ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Detailed Report');
       XLSX.writeFile(wb, `detailed-report-${new Date().toISOString().split('T')[0]}.xlsx`);

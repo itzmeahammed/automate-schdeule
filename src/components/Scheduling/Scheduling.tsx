@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useReducer } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { generateScheduleWithConflicts, optimizeSchedule, getAutoStatus, ScheduleConflict, checkDeliveryFeasibility, getAutoPOStatus } from '../../utils/scheduling';
+import { generateScheduleWithConflicts, optimizeSchedule, getAutoStatus, ScheduleConflict, checkDeliveryFeasibility, getAutoPOStatus, calculateWorkingHoursFromShift } from '../../utils/scheduling';
 import GanttChart from './GanttChart';
-import { ScheduleItem, PurchaseOrder } from '../../types';
+import { ScheduleItem, PurchaseOrder as SalesOrder } from '../../types';
 import { 
   Calendar, 
   Filter, 
@@ -16,7 +16,8 @@ import {
   Target,
   Clock,
   CheckCircle,
-  HelpCircle
+  HelpCircle,
+  Info
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -27,6 +28,12 @@ import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, Width
 function formatDMY(dateStr: string) {
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-GB');
+}
+
+// Add utility for DD/MM/YYYY HH:mm
+function formatDMYHM(dateStr: string) {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-GB') + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
 const Scheduling: React.FC = () => {
@@ -157,66 +164,166 @@ const Scheduling: React.FC = () => {
   };
 
   const exportSchedule = async (format: 'excel' | 'word' | 'pdf') => {
+    // Export each schedule item (process step) as a separate row
     const data = filteredSchedule.map(item => {
       const product = products.find(p => p.id === item.productId);
       const machine = machines.find(m => m.id === item.machineId);
       const po = purchaseOrders.find(p => p.id === item.poId);
+      
       return {
-        'PO Number': po?.poNumber || 'N/A',
+        'SO Number': po?.poNumber || 'N/A',
         'Product': product?.productName || 'Unknown',
         'Part Number': product?.partNumber || 'N/A',
+        'Process Step': item.processStep.toString(),
         'Machine': machine?.machineName || 'Unknown',
-        'Start Date': formatDMY(item.actualStartTime || item.startDate),
-        'End Date': formatDMY(item.actualEndTime || item.endDate),
+        'Machine Type': machine?.machineType || 'N/A',
+        'Start Date': formatDMYHM(item.actualStartTime || item.startDate),
+        'End Date': formatDMYHM(item.actualEndTime || item.endDate),
         'Quantity': item.quantity,
-        'Process Step': item.processStep,
-        'Allocated Time': `${item.allocatedTime} minutes`,
+        'Allocated Time (min)': item.allocatedTime.toString(),
         'Status': getAutoStatus(item),
-        'Efficiency': `${item.efficiency}%`,
-        'Quality Score': item.qualityScore || 'N/A',
+        'Efficiency (%)': item.efficiency,
+        'Quality Score': item.qualityScore,
         'Notes': item.notes || ''
       };
     });
+    
+          // Handle empty data case
+      if (data.length === 0) {
+        const emptyData = [{
+          'SO Number': 'No Data',
+          'Product': 'No Data',
+          'Part Number': 'No Data',
+          'Process Step': 'No Data',
+          'Machine': 'No Data',
+          'Machine Type': 'No Data',
+          'Start Date': 'No Data',
+          'End Date': 'No Data',
+          'Quantity': 0,
+          'Allocated Time (min)': 'No Data',
+          'Status': 'scheduled' as const,
+          'Efficiency (%)': 0,
+          'Quality Score': 0,
+          'Notes': 'No Data'
+        }];
+        data.push(...emptyData);
+      }
+    
     const today = formatDMY(new Date().toISOString());
     const company = user?.name || 'Manufacturing Company';
     const reportTitle = 'Production Schedule Report';
     // --- Excel ---
     if (format === 'excel') {
-      const ws = XLSX.utils.json_to_sheet(data);
+      // Create a new worksheet
+      const ws = XLSX.utils.aoa_to_sheet([]);
+      
+      // Add company header (spanning all columns)
       const header = Object.keys(data[0] || {});
-      header.forEach((h, idx) => {
-        const cell = XLSX.utils.encode_cell({ r: 0, c: idx });
-        if (!ws[cell]) ws[cell] = { t: 's', v: h };
-        ws[cell].s = {
-          font: { bold: true, color: { rgb: 'FFFFFF' } },
-          fill: { fgColor: { rgb: '2563EB' } },
-          alignment: { horizontal: 'center', vertical: 'center' },
-          border: {
-            top: { style: 'thin', color: { rgb: '2563EB' } },
-            bottom: { style: 'thin', color: { rgb: '2563EB' } },
-            left: { style: 'thin', color: { rgb: '2563EB' } },
-            right: { style: 'thin', color: { rgb: '2563EB' } },
-          },
-        };
-      });
-      // Add a summary row at the top
-      XLSX.utils.sheet_add_aoa(ws, [[company, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A1' });
-      XLSX.utils.sheet_add_aoa(ws, [[reportTitle, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A2' });
-      XLSX.utils.sheet_add_aoa(ws, [[`Date: ${today}`, '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A3' });
-      // Move data down by 3 rows
-      XLSX.utils.sheet_add_json(ws, data, { origin: 'A5', skipHeader: false });
-      // Set alternating row colors
-      for (let r = 1; r <= data.length; r++) {
-        header.forEach((h, c) => {
-          const cell = XLSX.utils.encode_cell({ r, c });
-          if (!ws[cell]) return;
+      XLSX.utils.sheet_add_aoa(ws, [[company, '', '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A1' });
+      
+      // Add report title (spanning all columns)
+      XLSX.utils.sheet_add_aoa(ws, [[reportTitle, '', '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A2' });
+      
+      // Add date (spanning all columns)
+      XLSX.utils.sheet_add_aoa(ws, [[`Date: ${today}`, '', '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A3' });
+      
+      // Add empty row for spacing
+      XLSX.utils.sheet_add_aoa(ws, [['', '', '', '', '', '', '', '', '', '', '', '', '', '']], { origin: 'A4' });
+      
+      // Add column headers
+      XLSX.utils.sheet_add_aoa(ws, [header], { origin: 'A5' });
+      
+      // Add data rows
+      XLSX.utils.sheet_add_aoa(ws, data.map(row => header.map(h => (row as Record<string, any>)[h])), { origin: 'A6' });
+      
+      // Style the company header (row 1)
+      for (let c = 0; c < header.length; c++) {
+        const cell = XLSX.utils.encode_cell({ r: 0, c });
+        if (ws[cell]) {
           ws[cell].s = {
-            fill: { fgColor: { rgb: r % 2 === 0 ? 'FFFFFF' : 'F3F6FD' } },
+            font: { bold: true, size: 16, color: { rgb: '2563EB' } },
             alignment: { horizontal: 'center', vertical: 'center' },
           };
+        }
+      }
+      
+      // Style the report title (row 2)
+      for (let c = 0; c < header.length; c++) {
+        const cell = XLSX.utils.encode_cell({ r: 1, c });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { bold: true, size: 14, color: { rgb: '1E293B' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        }
+      }
+      
+      // Style the date (row 3)
+      for (let c = 0; c < header.length; c++) {
+        const cell = XLSX.utils.encode_cell({ r: 2, c });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { size: 12, color: { rgb: '64748B' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+          };
+        }
+      }
+      
+      // Style the column headers (row 5)
+      header.forEach((h, idx) => {
+        const cell = XLSX.utils.encode_cell({ r: 4, c: idx });
+        if (ws[cell]) {
+          ws[cell].s = {
+            font: { bold: true, color: { rgb: 'FFFFFF' } },
+            fill: { fgColor: { rgb: '2563EB' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+            border: {
+              top: { style: 'thin', color: { rgb: '2563EB' } },
+              bottom: { style: 'thin', color: { rgb: '2563EB' } },
+              left: { style: 'thin', color: { rgb: '2563EB' } },
+              right: { style: 'thin', color: { rgb: '2563EB' } },
+            },
+          };
+        }
+      });
+      
+      // Style data rows with alternating colors
+      for (let r = 0; r < data.length; r++) {
+        header.forEach((h, c) => {
+          const cell = XLSX.utils.encode_cell({ r: r + 5, c });
+          if (ws[cell]) {
+            ws[cell].s = {
+              fill: { fgColor: { rgb: r % 2 === 0 ? 'FFFFFF' : 'F8FAFC' } },
+              alignment: { horizontal: 'center', vertical: 'center' },
+              border: {
+                top: { style: 'thin', color: { rgb: 'E2E8F0' } },
+                bottom: { style: 'thin', color: { rgb: 'E2E8F0' } },
+                left: { style: 'thin', color: { rgb: 'E2E8F0' } },
+                right: { style: 'thin', color: { rgb: 'E2E8F0' } },
+              },
+            };
+          }
         });
       }
-      ws['!cols'] = header.map(() => ({ wch: 22 }));
+      
+      // Set column widths
+      ws['!cols'] = [
+        { wch: 15 }, // SO Number
+        { wch: 25 }, // Product
+        { wch: 15 }, // Part Number
+        { wch: 12 }, // Process Step
+        { wch: 20 }, // Machine
+        { wch: 15 }, // Machine Type
+        { wch: 18 }, // Start Date
+        { wch: 18 }, // End Date
+        { wch: 10 }, // Quantity
+        { wch: 18 }, // Allocated Time
+        { wch: 12 }, // Status
+        { wch: 15 }, // Efficiency
+        { wch: 15 }, // Quality Score
+        { wch: 30 }  // Notes
+      ];
+      
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
       XLSX.writeFile(wb, `production-schedule-${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -242,8 +349,8 @@ const Scheduling: React.FC = () => {
           startY: 36,
           head: [header],
           body: data.map(row => header.map(h => (row as Record<string, any>)[h])),
-          styles: { fontSize: 11, cellPadding: 4, valign: 'middle', halign: 'center' },
-          headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 13, halign: 'center' },
+          styles: { fontSize: 8, cellPadding: 2, valign: 'middle', halign: 'center' },
+          headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 10, halign: 'center' },
           alternateRowStyles: { fillColor: [239, 246, 255] },
           margin: { left: 10, right: 10 },
           tableLineColor: [37, 99, 235],
@@ -267,7 +374,7 @@ const Scheduling: React.FC = () => {
             children: [
               new Paragraph({
                 children: [
-                  new TextRun({ text: h, bold: true, color: '2563EB', size: 24 }),
+                  new TextRun({ text: h, bold: true, color: '2563EB', size: 20 }),
                 ],
                 alignment: AlignmentType.CENTER,
               }),
@@ -289,7 +396,7 @@ const Scheduling: React.FC = () => {
               children: [
                 new Paragraph({
                   children: [
-                    new TextRun({ text: String(val), color: '1E293B', size: 22 }),
+                    new TextRun({ text: String(val), color: '1E293B', size: 18 }),
                   ],
                   alignment: AlignmentType.LEFT,
                 }),
@@ -316,7 +423,7 @@ const Scheduling: React.FC = () => {
                     alignment: AlignmentType.LEFT,
                   }),
                 ],
-                columnSpan: 2,
+                columnSpan: 14,
                 borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
               }),
             ],
@@ -330,7 +437,7 @@ const Scheduling: React.FC = () => {
                     alignment: AlignmentType.LEFT,
                   }),
                 ],
-                columnSpan: 2,
+                columnSpan: 14,
                 borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
               }),
             ],
@@ -344,7 +451,7 @@ const Scheduling: React.FC = () => {
                     alignment: AlignmentType.LEFT,
                   }),
                 ],
-                columnSpan: 2,
+                columnSpan: 14,
                 borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
               }),
             ],
@@ -411,8 +518,8 @@ const Scheduling: React.FC = () => {
 
   const stats = getScheduleStats();
 
-  // Helper to get a suggested feasible end date for a PO
-  const getSuggestedEndDate = (po: PurchaseOrder) => {
+  // Helper to get a suggested feasible end date for a SO
+  const getSuggestedEndDate = (po: SalesOrder) => {
     const product = products.find(p => p.id === po.productId);
     if (!product) return '';
     const { suggestedDate } = checkDeliveryFeasibility(
@@ -425,8 +532,8 @@ const Scheduling: React.FC = () => {
     return suggestedDate || '';
   };
 
-  // Helper to get the next N feasible end dates for a PO
-  const getNextFeasibleEndDates = (po: PurchaseOrder, count = 3) => {
+  // Helper to get the next N feasible end dates for a SO
+  const getNextFeasibleEndDates = (po: SalesOrder, count = 3) => {
     const product = products.find(p => p.id === po.productId);
     if (!product) return [];
     const baseDate = new Date(po.deliveryDate);
@@ -468,8 +575,8 @@ const Scheduling: React.FC = () => {
                 <Calendar size={24} className="text-white" />
               </div>
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">Production Schedule</h1>
-                <p className="text-gray-600">AI-powered auto-scheduling and optimization</p>
+                              <h1 className="text-3xl font-bold text-gray-900">Production Schedule</h1>
+              <p className="text-gray-600">AI-powered auto-scheduling and optimization for Sales Orders</p>
               </div>
             </div>
             
@@ -502,10 +609,10 @@ const Scheduling: React.FC = () => {
               <button
                 onClick={generateProductionSchedule}
                 disabled={isGenerating}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                className="flex items-center space-x-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all disabled:opacity-50 shadow-lg font-semibold"
               >
-                <RefreshCw size={16} className={isGenerating ? 'animate-spin' : ''} />
-                <span>{isGenerating ? 'Generating...' : 'Generate Schedule'}</span>
+                <RefreshCw size={18} className={isGenerating ? 'animate-spin' : ''} />
+                <span>{isGenerating ? 'Generating...' : 'Auto-Generate Schedule'}</span>
               </button>
             </div>
           </div>
@@ -513,6 +620,21 @@ const Scheduling: React.FC = () => {
       </div>
 
       <div className="p-6">
+        {/* Info Message */}
+        <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+          <div className="flex items-start gap-3">
+            <Info className="text-blue-600 mt-0.5" size={20} />
+            <div>
+              <h4 className="font-semibold text-blue-900 mb-1">Auto-Schedule Generation</h4>
+              <p className="text-blue-700 text-sm">
+                Schedules are automatically generated when you add new Sales Orders. 
+                You can also manually generate or optimize schedules here. 
+                The system considers machine availability, priorities, and delivery dates.
+              </p>
+            </div>
+          </div>
+        </div>
+
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-6 gap-4 mb-6">
           <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
@@ -753,7 +875,7 @@ const Scheduling: React.FC = () => {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      PO / Product
+                      SO / Product
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Machine
@@ -805,7 +927,7 @@ const Scheduling: React.FC = () => {
                       <tr key={item.id + refreshKey} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div>
-                            <p className="text-sm font-medium text-gray-900">{po?.poNumber}</p>
+                            <p className="text-sm font-medium text-gray-900">SO #{po?.poNumber}</p>
                             <p className="text-sm text-gray-500">{product?.productName}</p>
                             <p className="text-xs text-gray-400">Step {item.processStep} • Qty: {item.quantity}</p>
                           </div>
@@ -1130,13 +1252,13 @@ const Scheduling: React.FC = () => {
               <div className="mb-4">
                 <svg width="48" height="48" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fee2e2"/><path d="M12 8v4m0 4h.01" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
               </div>
-              <h2 className="text-2xl font-bold text-red-700 mb-2">PO Delayed</h2>
-              <p className="text-gray-700 mb-4 text-center">This Purchase Order is delayed. If the client is okay with the delay, you can mark it as completed manually.</p>
+              <h2 className="text-2xl font-bold text-red-700 mb-2">SO Delayed</h2>
+              <p className="text-gray-700 mb-4 text-center">This Sales Order is delayed. If the client is okay with the delay, you can mark it as completed manually.</p>
               <div className="flex gap-4">
                 <button
                   className="px-6 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition"
                   onClick={() => {
-                    // Mark all schedule items for this PO as completed
+                    // Mark all schedule items for this SO as completed
                     setScheduleItems(
                       scheduleItems.map((item) =>
                         item.poId === showDelayedPopup.poId

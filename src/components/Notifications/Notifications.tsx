@@ -3,7 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import { Bell, Check, X, AlertTriangle, Info, CheckCircle, XCircle, Filter, Search, Undo2 as UndoIcon } from 'lucide-react';
 
 const Notifications: React.FC = () => {
-  const { notifications, markNotificationAsRead, setNotifications } = useApp();
+  const { notifications, markNotificationAsRead, setNotifications, playNotificationSound } = useApp();
   const [filter, setFilter] = useState<'all' | 'unread' | 'info' | 'warning' | 'error' | 'success' | 'completed'>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -91,6 +91,13 @@ const Notifications: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center space-x-3">
+              <button
+                onClick={playNotificationSound}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+              >
+                <Bell size={16} />
+                Test Sound
+              </button>
               {unreadCount > 0 && (
                 <button
                   onClick={markAllAsRead}

@@ -1,10 +1,106 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { Product, ProcessStep } from '../../types';
-import { Plus, Edit2, Trash2, Save, X, ArrowRight, Copy } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, X, ArrowRight, Copy, Download, Upload } from 'lucide-react';
 
 const ProductMaster: React.FC = () => {
   const { products, machines, addProduct, updateProduct, deleteProduct } = useApp();
+  
+  // Export products to CSV
+  const exportProducts = () => {
+    const csvContent = [
+      ['Product Name', 'Part Number', 'Drawing Number', 'Priority', 'Category', 'Description', 'Material', 'Dimensions', 'Weight', 'Tolerance', 'Estimated Cost'],
+      ...products.map(product => [
+        product.productName,
+        product.partNumber,
+        product.drawingNumber,
+        product.priority,
+        product.category,
+        product.description,
+        product.specifications.material,
+        product.specifications.dimensions,
+        product.specifications.weight,
+        product.specifications.tolerance,
+        product.estimatedCost.toString()
+      ])
+    ].map(row => row.map(field => `"${field || ''}"`).join(',')).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `products_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Import products from CSV
+  const importProducts = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const lines = text.split('\n');
+      
+      const importedProducts: Partial<Product>[] = [];
+      
+      for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        
+        const values = lines[i].split(',').map(v => v.replace(/"/g, '').trim());
+        const product: Partial<Product> = {
+          productName: values[0] || '',
+          partNumber: values[1] || `PN-${Date.now()}-${i}`,
+          drawingNumber: values[2] || '',
+          priority: (values[3] as Product['priority']) || 'medium',
+          category: values[4] || '',
+          description: values[5] || '',
+          specifications: {
+            material: values[6] || '',
+            dimensions: values[7] || '',
+            weight: values[8] || '',
+            tolerance: values[9] || ''
+          },
+          estimatedCost: parseFloat(values[10]) || 0,
+          processFlow: [],
+          qualityStandards: []
+        };
+        
+        if (product.productName) {
+          importedProducts.push(product);
+        }
+      }
+      
+      // Add imported products
+      importedProducts.forEach(product => {
+        const newProduct: Product = {
+          id: crypto.randomUUID(),
+          productName: product.productName || '',
+          partNumber: product.partNumber || `PN-${Date.now()}`,
+          drawingNumber: product.drawingNumber || '',
+          processFlow: product.processFlow || [],
+          priority: product.priority || 'medium',
+          category: product.category || '',
+          description: product.description || '',
+          specifications: product.specifications || { material: '', dimensions: '', weight: '', tolerance: '' },
+          qualityStandards: product.qualityStandards || [],
+          estimatedCost: product.estimatedCost || 0
+        };
+        addProduct(newProduct);
+      });
+      
+      alert(`Successfully imported ${importedProducts.length} products`);
+    };
+    reader.readAsText(file);
+    
+    // Reset input
+    event.target.value = '';
+  };
+  
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<Product>>({
@@ -130,16 +226,35 @@ const ProductMaster: React.FC = () => {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-xl font-semibold text-gray-900">Product Master</h2>
-        <button
-          onClick={() => setIsAdding(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-        >
-          <Plus size={16} />
-          Add Product
-        </button>
-      </div>
+             <div className="flex justify-between items-center mb-6">
+         <h2 className="text-xl font-semibold text-gray-900">Product Master</h2>
+         <div className="flex items-center gap-3">
+           <button
+             onClick={exportProducts}
+             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+           >
+             <Download size={16} />
+             Export CSV
+           </button>
+           <label className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors cursor-pointer">
+             <Upload size={16} />
+             Import CSV
+             <input
+               type="file"
+               accept=".csv"
+               onChange={importProducts}
+               className="hidden"
+             />
+           </label>
+           <button
+             onClick={() => setIsAdding(true)}
+             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+           >
+             <Plus size={16} />
+             Add Product
+           </button>
+         </div>
+       </div>
 
       {isAdding && (
         <div className="bg-white/90 rounded-xl shadow p-4 mb-6 border border-blue-100">

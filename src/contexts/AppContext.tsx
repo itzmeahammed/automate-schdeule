@@ -19,6 +19,8 @@ interface AppContextType {
   theme: 'light' | 'dark';
   sidebarCollapsed: boolean;
   holidays: string[];
+  authToken: string | null;
+  setAuthToken: React.Dispatch<React.SetStateAction<string | null>>;
   
   // Setters
   setMachines: (machines: Machine[]) => void;
@@ -58,6 +60,7 @@ interface AppContextType {
   getCriticalAlertsCount: () => number;
   resetToSampleData: () => void; // Expose for demo/testing
   addSystemNotification: (type: 'info' | 'warning' | 'error' | 'success', title: string, message: string) => void;
+  playNotificationSound: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -96,6 +99,35 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
   // --- Auth State ---
   const [user, setUser] = useState<DemoUser | null>(null);
   const [users, setUsers] = useState<DemoUser[]>([]);
+  
+  // Notification sound functionality
+  const playNotificationSound = () => {
+    try {
+      const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmGgU7k9n1unEiBC13yO/eizEIHWq+8+OWT');
+      audio.volume = 0.3;
+      audio.play().catch(() => {
+        // Fallback: create a simple beep sound
+        const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = context.createOscillator();
+        const gainNode = context.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(context.destination);
+        
+        oscillator.frequency.setValueAtTime(800, context.currentTime);
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(0.1, context.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.1);
+        
+        oscillator.start(context.currentTime);
+        oscillator.stop(context.currentTime + 0.1);
+      });
+    } catch (error) {
+      console.log('Notification sound not supported');
+    }
+  };
+  const [authToken, setAuthToken] = useState<string | null>(null);
 
   // Load users and current user from localStorage on mount
   useEffect(() => {
@@ -119,6 +151,21 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     }
   }, [user]);
 
+  // Load token from storage on mount
+  useEffect(() => {
+    const storedToken = localStorage.getItem('authToken');
+    if (storedToken) setAuthToken(storedToken);
+  }, []);
+
+  // Save token to storage when it changes
+  useEffect(() => {
+    if (authToken) {
+      localStorage.setItem('authToken', authToken);
+    } else {
+      localStorage.removeItem('authToken');
+    }
+  }, [authToken]);
+
   // Sign up method
   const signUp = (newUser: Omit<DemoUser, 'id'>) => {
     if (users.some(u => u.email === newUser.email)) {
@@ -132,7 +179,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     return { success: true, message: 'Account created! You can now sign in.' };
   };
 
-  // Sign in method
+  // Update signIn to generate token
   const signIn = (email: string, password: string) => {
     const found = users.find(
       (u: any) =>
@@ -143,12 +190,15 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
       return { success: false, message: 'Invalid email or password.' };
     }
     setUser(found);
-    return { success: true, message: 'Signed in!', user: found };
+    const token = crypto.randomUUID();
+    setAuthToken(token);
+    return { success: true, message: 'Signed in!', user: found, token };
   };
 
-  // Sign out method
+  // Update signOut to clear token
   const signOut = () => {
     setUser(null);
+    setAuthToken(null);
   };
 
   // --- Existing App State ---
@@ -459,6 +509,9 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
       },
       ...prev
     ]);
+    
+    // Play notification sound (always play for system notifications)
+    playNotificationSound();
   };
 
   // Helper to get all Sundays in a year
@@ -823,8 +876,11 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     getCriticalAlertsCount,
     resetToSampleData, // Expose for demo/testing
     addSystemNotification,
+    playNotificationSound,
     holidays,
     setHolidays,
+    authToken,
+    setAuthToken,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -88,7 +88,7 @@ const Sidebar: React.FC = () => {
     },
     { 
       id: 'purchase-orders', 
-      label: 'Purchase Orders', 
+      label: 'Sales Orders', 
       icon: ShoppingCart,
       description: 'Order management and tracking',
       path: '/purchase-orders',

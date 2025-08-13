@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { PurchaseOrder } from '../../types';
-import { checkDeliveryFeasibility } from '../../utils/scheduling';
+import { checkDeliveryFeasibility, generateScheduleWithConflicts } from '../../utils/scheduling';
 import { Plus, Edit2, Trash2, Save, X, AlertTriangle, CheckCircle, Info, Copy } from 'lucide-react';
-import { generateScheduleWithConflicts, ScheduleConflict, getAutoPOStatus } from '../../utils/scheduling';
+import { ScheduleConflict, getAutoPOStatus } from '../../utils/scheduling';
 
 const PurchaseOrders: React.FC = () => {
-  const { purchaseOrders, products, machines, user, addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, shifts, updateMachine, setScheduleItems, scheduleItems, holidays } = useApp();
+  const { purchaseOrders, products, machines, user, addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, shifts, updateMachine, setScheduleItems, scheduleItems, holidays, addSystemNotification } = useApp();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<PurchaseOrder>>({
@@ -28,7 +28,23 @@ const PurchaseOrders: React.FC = () => {
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [pendingPO, setPendingPO] = useState<PurchaseOrder | null>(null);
   const [showMachinePOs, setShowMachinePOs] = useState<{ machineId: string, open: boolean }>({ machineId: '', open: false });
+  const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
+  const [isGeneratingSchedule, setIsGeneratingSchedule] = useState(false);
+  const [showMaintenanceWarning, setShowMaintenanceWarning] = useState<{
+    open: boolean;
+    machines: Array<{ id: string; name: string; status: string; }>;
+  }>({ open: false, machines: [] });
 console.log(purchaseOrders , "hello");
+
+  // Handle toast notifications
+  React.useEffect(() => {
+    const handler = (e: any) => {
+      setToast(e.detail);
+      setTimeout(() => setToast(null), 3000);
+    };
+    window.addEventListener('toast', handler);
+    return () => window.removeEventListener('toast', handler);
+  }, []);
 
   const autoCalculatePriority = (deliveryDate: string) => {
     if (!deliveryDate) return 'medium';
@@ -79,6 +95,34 @@ console.log(purchaseOrders , "hello");
       setEditingId(null);
     } else {
       addPurchaseOrder(newPO);
+      // Auto-generate schedule after adding new PO
+      setIsGeneratingSchedule(true);
+      setTimeout(() => {
+        const { schedule: newSchedule } = generateScheduleWithConflicts(
+          [...purchaseOrders, newPO],
+          products,
+          machines,
+          shifts,
+          holidays
+        );
+        const mergedSchedule = newSchedule.map(newItem => {
+          const prevItem = scheduleItems.find(item => item.id === newItem.id);
+          if (prevItem && (prevItem.status === 'in-progress' || prevItem.status === 'completed')) {
+            return {
+              ...newItem,
+              status: prevItem.status,
+              startDate: prevItem.startDate,
+              endDate: prevItem.endDate,
+              actualStartTime: prevItem.actualStartTime,
+              actualEndTime: prevItem.actualEndTime
+            };
+          }
+          return newItem;
+        });
+        setScheduleItems(mergedSchedule);
+        addSystemNotification('success', 'Schedule Generated', `Schedule for PO ${newPO.poNumber} generated successfully.`);
+        setIsGeneratingSchedule(false);
+      }, 100);
     }
     resetForm();
   };
@@ -106,10 +150,11 @@ console.log(purchaseOrders , "hello");
   };
 
   const handleDuplicate = (po: PurchaseOrder) => {
-    const duplicated = {
+    const duplicated: PurchaseOrder = {
       ...po,
       id: crypto.randomUUID(),
       poNumber: po.poNumber + '-COPY',
+      status: 'pending' as const, // Always set status to pending for copied purchase orders
     };
     setFormData(duplicated);
     setIsAdding(true);
@@ -121,6 +166,23 @@ console.log(purchaseOrders , "hello");
     const product = products.find(p => p.id === productId);
     if (product) {
       setFormData(prev => ({ ...prev, partNumber: product.partNumber }));
+      
+      // Check for machines in maintenance
+      const maintenanceMachines = product.processFlow
+        .map(step => {
+          const machine = machines.find(m => m.id === step.machineId);
+          return machine && (machine.status === 'maintenance' || machine.status === 'breakdown') 
+            ? { id: machine.id, name: machine.machineName, status: machine.status }
+            : null;
+        })
+        .filter(Boolean);
+      
+      if (maintenanceMachines.length > 0) {
+        setShowMaintenanceWarning({
+          open: true,
+          machines: maintenanceMachines as Array<{ id: string; name: string; status: string; }>
+        });
+      }
     }
   };
 
@@ -152,7 +214,8 @@ console.log(purchaseOrders , "hello");
           qualityApproved: formData.qualityApproved || false,
           priority: formData.priority || autoCalculatePriority(formData.deliveryDate),
         };
-        // Check for machine conflicts using generateScheduleWithConflicts
+        
+        // First check for machine conflicts
         const { conflicts } = generateScheduleWithConflicts(
           [...purchaseOrders, tempPO],
           products,
@@ -161,6 +224,7 @@ console.log(purchaseOrders , "hello");
           holidays
         );
         const relevantConflicts = conflicts.filter(c => c.newPO.id === tempPO.id);
+        
         if (relevantConflicts.length > 0) {
           setConflicts(relevantConflicts);
           setPendingPO(tempPO);
@@ -171,14 +235,17 @@ console.log(purchaseOrders , "hello");
           });
           return;
         }
+        
+        // Now check delivery feasibility with existing schedule
         const result = checkDeliveryFeasibility(
           tempPO,
           product,
           machines,
           shifts,
           holidays,
-          [] // No existing schedule at PO creation
+          scheduleItems // Pass existing schedule items
         );
+        
         setFeasibilityCheck({
           feasible: result.feasible,
           message: result.message,
@@ -266,10 +333,22 @@ console.log(purchaseOrders , "hello");
 
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-6 right-6 z-50 px-6 py-3 rounded-lg shadow-lg text-white font-semibold transition-all animate-fade-in ${toast.type === 'success' ? 'bg-green-600' : toast.type === 'info' ? 'bg-blue-600' : 'bg-red-600'}`}>
+          {toast.message}
+        </div>
+      )}
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Purchase Orders</h1>
           <p className="text-gray-600">Manage production orders and delivery schedules</p>
+          {isGeneratingSchedule && (
+            <div className="mt-2 flex items-center gap-2 text-blue-600">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+              <span className="text-sm">Generating schedule...</span>
+            </div>
+          )}
         </div>
         <button
           onClick={() => setIsAdding(true)}
@@ -569,6 +648,35 @@ console.log(purchaseOrders , "hello");
                     });
                   });
                   addPurchaseOrder(pendingPO);
+                  // Auto-generate schedule after resolving conflict and adding PO
+                  setIsGeneratingSchedule(true);
+                  setTimeout(() => {
+                    const { schedule: newSchedule } = generateScheduleWithConflicts(
+                      purchaseOrders,
+                      products,
+                      machines,
+                      shifts,
+                      holidays
+                    );
+                    // Preserve existing progress for in-progress/completed items
+                    const mergedSchedule = newSchedule.map(newItem => {
+                      const prevItem = scheduleItems.find(item => item.id === newItem.id);
+                      if (prevItem && (prevItem.status === 'in-progress' || prevItem.status === 'completed')) {
+                        return {
+                          ...newItem,
+                          status: prevItem.status,
+                          startDate: prevItem.startDate,
+                          endDate: prevItem.endDate,
+                          actualStartTime: prevItem.actualStartTime,
+                          actualEndTime: prevItem.actualEndTime
+                        };
+                      }
+                      return newItem;
+                    });
+                    setScheduleItems(mergedSchedule);
+                    addSystemNotification('success', 'Schedule Generated', `Schedule for PO ${pendingPO.poNumber} generated successfully.`);
+                    setIsGeneratingSchedule(false);
+                  }, 100);
                   setShowConflictModal(false);
                   setConflicts([]);
                   setPendingPO(null);
@@ -625,6 +733,68 @@ console.log(purchaseOrders , "hello");
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Machine Maintenance Warning Modal */}
+      {showMaintenanceWarning.open && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full mx-4 p-8 border-4 border-amber-300">
+            <div className="flex flex-col items-center text-center mb-6">
+              <div className="mb-4">
+                <svg width="48" height="48" fill="none" viewBox="0 0 24 24">
+                  <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold text-amber-700 mb-2">Machine Maintenance Warning</h2>
+              <p className="text-gray-700 mb-4">
+                The following machines required for this product are currently in maintenance or breakdown status. 
+                You need to change their status to 'active' before proceeding.
+              </p>
+            </div>
+            
+            <div className="space-y-4 mb-6">
+              {showMaintenanceWarning.machines.map(machine => (
+                <div key={machine.id} className="flex items-center justify-between p-4 bg-amber-50 rounded-lg border border-amber-200">
+                  <div className="flex items-center gap-3">
+                    <span className={`px-3 py-1 rounded-full text-sm font-bold ${
+                      machine.status === 'maintenance' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
+                      'bg-red-100 text-red-800 border border-red-300'
+                    }`}>
+                      {machine.status.toUpperCase()}
+                    </span>
+                    <span className="font-semibold text-gray-800">{machine.name}</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      updateMachine(machine.id, { status: 'active' });
+                      // Remove this machine from the warning list
+                      setShowMaintenanceWarning(prev => ({
+                        ...prev,
+                        machines: prev.machines.filter(m => m.id !== machine.id)
+                      }));
+                      // Close modal if no more maintenance machines
+                      if (showMaintenanceWarning.machines.length === 1) {
+                        setShowMaintenanceWarning({ open: false, machines: [] });
+                      }
+                    }}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-semibold"
+                  >
+                    Set to Active
+                  </button>
+                </div>
+              ))}
+            </div>
+            
+            <div className="flex justify-center">
+              <button
+                onClick={() => setShowMaintenanceWarning({ open: false, machines: [] })}
+                className="px-6 py-3 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors font-semibold"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

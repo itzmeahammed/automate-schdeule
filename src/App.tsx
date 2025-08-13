@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './components/Layout/Sidebar';
 import Dashboard from './components/Dashboard/Dashboard';
 import MasterData from './components/MasterData/MasterData';
@@ -61,8 +61,8 @@ function NotAuthorized() {
 }
 
 function ProtectedRoute({ page, children }: { page: keyof typeof rolePermissions['admin'], children: React.ReactNode }) {
-  const { user } = useApp();
-  if (!user) return null;
+  const { user, authToken } = useApp();
+  if (!user || !authToken) return <Navigate to="/login" replace />;
   // Map 'manager' to 'admin' for permissions
   let role = (user.role === 'manager' ? 'admin' : user.role) as 'admin' | 'superadmin' | 'operator';
   if (rolePermissions[role][page]) {
@@ -72,18 +72,23 @@ function ProtectedRoute({ page, children }: { page: keyof typeof rolePermissions
 }
 
 function AuthGate() {
-  const { user } = useApp();
+  const { user, authToken } = useApp();
   const [showSignUp, setShowSignUp] = useState(false);
   const location = useLocation();
-  console.log('Current route location:', location);
+  const navigate = useNavigate();
 
-  if (!user) {
+  // If not authenticated, show login/signup
+  if (!user || !authToken) {
+    // If already on /login or /signup, stay, else redirect to /login
+    if (location.pathname !== '/login' && location.pathname !== '/signup') {
+      return <Navigate to="/login" replace />;
+    }
     return (
       <>
         {showSignUp ? (
           <SignUp onSignUp={() => setShowSignUp(false)} />
         ) : (
-          <SignIn onSignIn={() => {}} />
+          <SignIn onSignIn={() => navigate('/dashboard')} />
         )}
         <div className="absolute top-4 right-4">
           {showSignUp ? (
@@ -100,6 +105,11 @@ function AuthGate() {
     );
   }
 
+  // If authenticated and on /login or /signup, redirect to dashboard
+  if (location.pathname === '/login' || location.pathname === '/signup') {
+    return <Navigate to="/dashboard" replace />;
+  }
+
   // Main app layout when user is logged in
   return (
       <div className="flex h-screen bg-gray-100 overflow-hidden">
@@ -107,15 +117,18 @@ function AuthGate() {
         <main className="flex-1 overflow-y-auto">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<ProtectedRoute page="dashboard"><Dashboard /></ProtectedRoute>} />
-          <Route path="/master-data" element={<ProtectedRoute page="master-data"><MasterData /></ProtectedRoute>} />
-          <Route path="/purchase-orders" element={<ProtectedRoute page="purchase-orders"><PurchaseOrders /></ProtectedRoute>} />
-          <Route path="/scheduling" element={<ProtectedRoute page="scheduling"><Scheduling /></ProtectedRoute>} />
-          <Route path="/reports" element={<ProtectedRoute page="reports"><Reports /></ProtectedRoute>} />
-          <Route path="/notifications" element={<ProtectedRoute page="notifications"><Notifications /></ProtectedRoute>} />
-          <Route path="/alerts" element={<ProtectedRoute page="alerts"><Alerts /></ProtectedRoute>} />
-          <Route path="/holidays" element={<ProtectedRoute page="holidays"><HolidaySettings /></ProtectedRoute>} />
-          <Route path="/settings" element={<ProtectedRoute page="dashboard"><Settings /></ProtectedRoute>} />
+            <Route path="/dashboard" element={<ProtectedRoute page="dashboard"><Dashboard /></ProtectedRoute>} />
+            <Route path="/master-data" element={<ProtectedRoute page="master-data"><MasterData /></ProtectedRoute>} />
+            <Route path="/purchase-orders" element={<ProtectedRoute page="purchase-orders"><PurchaseOrders /></ProtectedRoute>} />
+            <Route path="/scheduling" element={<ProtectedRoute page="scheduling"><Scheduling /></ProtectedRoute>} />
+            <Route path="/reports" element={<ProtectedRoute page="reports"><Reports /></ProtectedRoute>} />
+            <Route path="/notifications" element={<ProtectedRoute page="notifications"><Notifications /></ProtectedRoute>} />
+            <Route path="/alerts" element={<ProtectedRoute page="alerts"><Alerts /></ProtectedRoute>} />
+            <Route path="/holidays" element={<ProtectedRoute page="holidays"><HolidaySettings /></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute page="dashboard"><Settings /></ProtectedRoute>} />
+            {/* Add login and signup routes for unauthenticated users */}
+            <Route path="/login" element={<SignIn onSignIn={() => navigate('/dashboard')} />} />
+            <Route path="/signup" element={<SignUp onSignUp={() => setShowSignUp(false)} />} />
           </Routes>
         </main>
       </div>

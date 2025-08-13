@@ -18,7 +18,7 @@ export interface Machine {
   machineName: string;
   machineType: string;
   capacity: string;
-  workingHours: number;
+  workingHours?: number; // Now optional, calculated from shift timing
   shiftTiming: string;
   status: 'active' | 'idle' | 'maintenance' | 'inactive' | 'breakdown';
   location: string;

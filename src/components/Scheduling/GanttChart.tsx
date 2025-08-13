@@ -1,8 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { ScheduleItem } from '../../types';
 import { Calendar, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
-import { getAutoStatus } from '../../utils/scheduling';
 
 interface GanttChartProps {
   scheduleItems: ScheduleItem[];
@@ -60,6 +59,86 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
   const timeSlots = generateTimeSlots();
 
   const isHoliday = (date: Date) => holidays.includes(date.toISOString().split('T')[0]);
+
+  // Helper function to parse shift timing
+  const parseShiftTiming = (shiftTiming: string) => {
+    if (shiftTiming === 'Custom') return { start: '09:00', end: '17:00' };
+    const [start, end] = shiftTiming.split('-');
+    return { start: start || '09:00', end: end || '17:00' };
+  };
+
+  // Helper function to get working hours from shift timing
+  const getWorkingHoursFromShift = (shiftTiming: string): number => {
+    const { start, end } = parseShiftTiming(shiftTiming);
+    const startTime = new Date(`2000-01-01T${start}:00`);
+    const endTime = new Date(`2000-01-01T${end}:00`);
+    
+    // Handle overnight shifts
+    if (endTime < startTime) {
+      endTime.setDate(endTime.getDate() + 1);
+    }
+    
+    const diffMs = endTime.getTime() - startTime.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+    return Math.round(diffHours * 10) / 10;
+  };
+
+  // Split schedule item into daily segments based on machine shift
+  const splitItemByShift = (item: ScheduleItem) => {
+    const machine = machines.find(m => m.id === item.machineId);
+    if (!machine) return [item];
+
+    const { start: shiftStart, end: shiftEnd } = parseShiftTiming(machine.shiftTiming);
+    const workingHoursPerDay = getWorkingHoursFromShift(machine.shiftTiming);
+    const workingMinutesPerDay = workingHoursPerDay * 60;
+    
+    const itemStart = new Date(item.startDate);
+    const itemEnd = new Date(item.endDate);
+    const totalDurationMinutes = item.allocatedTime;
+    
+    const segments = [];
+    let remainingTime = totalDurationMinutes;
+    let currentDate = new Date(itemStart);
+    
+    while (remainingTime > 0 && currentDate <= itemEnd) {
+      // Skip weekends and holidays
+      const dateStr = currentDate.toISOString().split('T')[0];
+      const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+      const isHolidayDate = holidays.includes(dateStr);
+      
+      if (isWeekend || isHolidayDate) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+      
+      // Calculate segment for this day
+      const segmentDuration = Math.min(remainingTime, workingMinutesPerDay);
+      
+      // Create segment start and end times based on shift timing
+      const segmentStart = new Date(currentDate);
+      const [startHour, startMinute] = shiftStart.split(':').map(Number);
+      segmentStart.setHours(startHour, startMinute, 0, 0);
+      
+      const segmentEnd = new Date(segmentStart);
+      segmentEnd.setMinutes(segmentEnd.getMinutes() + segmentDuration);
+      
+      segments.push({
+        ...item,
+        id: `${item.id}-${segments.length}`,
+        startDate: segmentStart.toISOString(),
+        endDate: segmentEnd.toISOString(),
+        allocatedTime: segmentDuration,
+        isSegment: true,
+        originalId: item.id,
+        segmentIndex: segments.length
+      });
+      
+      remainingTime -= segmentDuration;
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    return segments.length > 0 ? segments : [item];
+  };
 
   const getItemPosition = (item: ScheduleItem) => {
     const itemStart = new Date(item.startDate);
@@ -256,8 +335,8 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
                     />
                   ))}
                   
-                  {/* Schedule Items */}
-                  {machineItems.map((item) => {
+                  {/* Schedule Items - Split by Shift */}
+                  {machineItems.flatMap(item => splitItemByShift(item)).map((item, index) => {
                     const position = getItemPosition(item);
                     const product = products.find(p => p.id === item.productId);
                     const po = purchaseOrders.find(p => p.id === item.poId);
@@ -269,21 +348,31 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
                     if (now <= start) progress = 0;
                     else if (now >= end) progress = 100;
                     else progress = Math.round(((now.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100);
+                    
+                    // Add visual indicator for segmented tasks
+                    const isSegmented = (item as any).isSegment;
+                    const segmentIndex = (item as any).segmentIndex;
+                    
                     return (
                       <div
-                        key={item.id}
-                        className={`absolute top-1 bottom-1 rounded-lg cursor-pointer transition-all duration-200 hover:shadow-lg hover:z-10 ${getStatusColor(item.status)}`}
+                        key={`${item.id}-${index}`}
+                        className={`absolute top-1 bottom-1 rounded-lg cursor-pointer transition-all duration-200 hover:shadow-lg hover:z-10 ${
+                          getStatusColor(item.status)
+                        } ${isSegmented ? 'border-2 border-white border-opacity-30' : ''}`}
                         style={{
                           left: `${position.left}%`,
                           width: `${position.width}%`,
                           minWidth: '60px'
                         }}
                         onClick={() => onItemClick?.(item)}
-                        title={`${product?.productName} - ${po?.poNumber}\nStep ${item.processStep}\nDuration: ${item.allocatedTime} min\nStatus: ${item.status}`}
+                        title={`${product?.productName} - ${po?.poNumber}\nStep ${item.processStep}\nDuration: ${item.allocatedTime} min\nStatus: ${item.status}${isSegmented ? `\nSegment: ${segmentIndex + 1}` : ''}`}
                       >
                         <div className="p-2 text-white text-xs h-full flex flex-col justify-center">
                           <div className="font-medium truncate">
                             {product?.productName || 'Unknown'}
+                            {isSegmented && (
+                              <span className="ml-1 text-xs opacity-75">({segmentIndex + 1})</span>
+                            )}
                           </div>
                           <div className="text-xs opacity-90 truncate">
                             Step {item.processStep} • {item.quantity} pcs

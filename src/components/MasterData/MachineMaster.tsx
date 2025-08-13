@@ -1,17 +1,135 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { Machine } from '../../types';
-import { Plus, Edit2, Trash2, Save, X, Copy } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, X, Copy, Download, Upload } from 'lucide-react';
 
 const MachineMaster: React.FC = () => {
   const { machines, addMachine, updateMachine, deleteMachine, purchaseOrders, products, deletePurchaseOrder } = useApp();
+  
+  // Helper function to calculate working hours from shift timing
+  const calculateWorkingHoursFromShift = (shiftTiming: string): number => {
+    if (shiftTiming === 'Custom') return 8; // Default for custom shifts
+    
+    const [start, end] = shiftTiming.split('-');
+    if (!start || !end) return 8;
+    
+    const startTime = new Date(`2000-01-01T${start}:00`);
+    const endTime = new Date(`2000-01-01T${end}:00`);
+    
+    // Handle overnight shifts
+    if (endTime < startTime) {
+      endTime.setDate(endTime.getDate() + 1);
+    }
+    
+    const diffMs = endTime.getTime() - startTime.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+    
+    return Math.round(diffHours * 10) / 10; // Round to 1 decimal place
+  };
+
+  // Export machines to CSV
+  const exportMachines = () => {
+    const csvContent = [
+      ['Machine Name', 'Machine Type', 'Capacity', 'Shift Timing', 'Status', 'Location', 'Efficiency (%)', 'Last Maintenance', 'Next Maintenance', 'Power (kW)'],
+      ...machines.map(machine => [
+        machine.machineName,
+        machine.machineType,
+        machine.capacity,
+        machine.shiftTiming,
+        machine.status,
+        machine.location,
+        machine.efficiency.toString(),
+        machine.lastMaintenance,
+        machine.nextMaintenance,
+        machine.specifications.power
+      ])
+    ].map(row => row.map(field => `"${field || ''}"`).join(',')).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `machines_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Import machines from CSV
+  const importMachines = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const lines = text.split('\n');
+      const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
+      
+      const importedMachines: Partial<Machine>[] = [];
+      
+      for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        
+        const values = lines[i].split(',').map(v => v.replace(/"/g, '').trim());
+        const machine: Partial<Machine> = {
+          machineName: values[0] || '',
+          machineType: values[1] || '',
+          capacity: values[2] || '',
+          shiftTiming: values[3] || '09:00-17:00',
+          status: (values[4] as Machine['status']) || 'active',
+          location: values[5] || '',
+          efficiency: parseInt(values[6]) || 100,
+          lastMaintenance: values[7] || '',
+          nextMaintenance: values[8] || '',
+          specifications: {
+            power: values[9] || '',
+            dimensions: '',
+            weight: ''
+          },
+          problems: []
+        };
+        
+        if (machine.machineName) {
+          importedMachines.push(machine);
+        }
+      }
+      
+      // Add imported machines
+      importedMachines.forEach(machine => {
+        const newMachine: Machine = {
+          id: crypto.randomUUID(),
+          machineName: machine.machineName || '',
+          machineType: machine.machineType || '',
+          capacity: machine.capacity || '',
+          workingHours: calculateWorkingHoursFromShift(machine.shiftTiming || '09:00-17:00'),
+          shiftTiming: machine.shiftTiming || '09:00-17:00',
+          status: machine.status || 'active',
+          location: machine.location || '',
+          efficiency: machine.efficiency || 100,
+          lastMaintenance: machine.lastMaintenance || '',
+          nextMaintenance: machine.nextMaintenance || '',
+          specifications: machine.specifications || { power: '', dimensions: '', weight: '' },
+          problems: machine.problems || []
+        };
+        addMachine(newMachine);
+      });
+      
+      alert(`Successfully imported ${importedMachines.length} machines`);
+    };
+    reader.readAsText(file);
+    
+    // Reset input
+    event.target.value = '';
+  };
+  
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<Machine & { associatedProcesses?: { productId: string; stepId: string }[] }>>({
     machineName: '',
     machineType: '',
     capacity: '',
-    workingHours: 8,
     shiftTiming: '09:00-17:00',
     status: 'active',
     location: '',
@@ -39,7 +157,7 @@ const MachineMaster: React.FC = () => {
         machineName: formData.machineName || '',
         machineType: formData.machineType || '',
         capacity: formData.capacity || '',
-        workingHours: formData.workingHours || 8,
+                 workingHours: calculateWorkingHoursFromShift(formData.shiftTiming || '09:00-17:00'),
         shiftTiming: formData.shiftTiming || '09:00-17:00',
         status: formData.status || 'active',
         location: formData.location || '',
@@ -64,7 +182,6 @@ const MachineMaster: React.FC = () => {
     setFormData({
       machineName: '',
       machineType: '',
-      workingHours: 8,
       shiftTiming: '09:00-17:00',
       status: 'active',
     });
@@ -78,16 +195,16 @@ const MachineMaster: React.FC = () => {
     setIsAdding(true);
   };
 
-  // When deleting a machine, also delete all POs that use this machine
+  // When deleting a machine, also delete all SOs that use this machine
   const handleDeleteMachine = (machineId: string) => {
     // Find all productIds that use this machine in their processFlow
     const affectedProductIds = products
       .filter(product => product.processFlow.some(step => step.machineId === machineId))
       .map(product => product.id);
-    // Find all POs that use these products
-    const affectedPOs = purchaseOrders.filter(po => affectedProductIds.includes(po.productId));
-    // Delete each affected PO
-    affectedPOs.forEach(po => deletePurchaseOrder(po.id));
+    // Find all SOs that use these products
+    const affectedSOs = purchaseOrders.filter(po => affectedProductIds.includes(po.productId));
+    // Delete each affected SO
+    affectedSOs.forEach(po => deletePurchaseOrder(po.id));
     // Delete the machine
     deleteMachine(machineId);
   };
@@ -114,16 +231,35 @@ const MachineMaster: React.FC = () => {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-xl font-semibold text-gray-900">Machine Master</h2>
-        <button
-          onClick={() => setIsAdding(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-        >
-          <Plus size={16} />
-          Add Machine
-        </button>
-      </div>
+             <div className="flex justify-between items-center mb-6">
+         <h2 className="text-xl font-semibold text-gray-900">Machine Master</h2>
+         <div className="flex items-center gap-3">
+           <button
+             onClick={exportMachines}
+             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+           >
+             <Download size={16} />
+             Export CSV
+           </button>
+           <label className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors cursor-pointer">
+             <Upload size={16} />
+             Import CSV
+             <input
+               type="file"
+               accept=".csv"
+               onChange={importMachines}
+               className="hidden"
+             />
+           </label>
+           <button
+             onClick={() => setIsAdding(true)}
+             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+           >
+             <Plus size={16} />
+             Add Machine
+           </button>
+         </div>
+       </div>
 
       {isAdding && (
         <div className="bg-gray-50 rounded-lg p-6 mb-6">
@@ -168,26 +304,18 @@ const MachineMaster: React.FC = () => {
 
             <div className="space-y-4">
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Working Hours
-              </label>
-              <input
-                type="number"
-                value={formData.workingHours}
-                onChange={(e) => setFormData(prev => ({ ...prev, workingHours: Number(e.target.value) }))}
-                className="w-full px-3 py-2 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/50 text-gray-900 font-medium shadow-sm"
-                required
-                min="1"
-                max="24"
-              />
-            </div>
-
-            <div className="space-y-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
                 Shift Timing
               </label>
               <select
                 value={formData.shiftTiming}
-                onChange={(e) => setFormData(prev => ({ ...prev, shiftTiming: e.target.value }))}
+                onChange={(e) => {
+                  const newShiftTiming = e.target.value;
+                  setFormData(prev => ({ 
+                    ...prev, 
+                    shiftTiming: newShiftTiming,
+                    workingHours: calculateWorkingHoursFromShift(newShiftTiming)
+                  }));
+                }}
                 className="w-full px-3 py-2 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 bg-blue-50/50 text-gray-900 font-medium shadow-sm"
                 required
               >
@@ -364,12 +492,9 @@ const MachineMaster: React.FC = () => {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Type
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Working Hours
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Shift Timing
-                </th>
+                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                   Shift Timing (Hours)
+                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
@@ -397,12 +522,13 @@ const MachineMaster: React.FC = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {machine.machineType}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {machine.workingHours}h
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {machine.shiftTiming}
-                    </td>
+                                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {machine.shiftTiming}
+                        <br />
+                        <span className="text-xs text-gray-400">
+                          ({calculateWorkingHoursFromShift(machine.shiftTiming)}h)
+                        </span>
+                      </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(machine.status)}`}> 
                         {machine.status}
