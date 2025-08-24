@@ -554,7 +554,7 @@ const Reports: React.FC = () => {
         const completedWithActuals = machineSchedule.filter(item => item.status === 'completed' && item.actualStartTime && item.actualEndTime);
         console.log('Machine:', machine, 'Completed with actuals:', completedWithActuals);
               const totalTime = machineSchedule.reduce((sum, item) => sum + item.allocatedTime, 0);
-              const utilizationPercentage = Math.min(100, (totalTime / (machine.workingHours * 60)) * 100);
+              const utilizationPercentage = machine.workingHours ? Math.min(100, (totalTime / (machine.workingHours * 60)) * 100) : 0;
         const liveEfficiency = calculateMachineEfficiency(machine.id, scheduleItems);
               return (
           <div key={machine.id} className="bg-white rounded-2xl shadow-md border border-gray-200 p-6 mb-4">

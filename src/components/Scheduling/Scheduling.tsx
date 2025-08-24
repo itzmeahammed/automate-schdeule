@@ -156,7 +156,7 @@ const Scheduling: React.FC = () => {
     try {
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      const optimized = optimizeSchedule(scheduleItems, machines, products);
+      const optimized = optimizeSchedule(scheduleItems, products);
       setScheduleItems(optimized);
     } finally {
       setIsOptimizing(false);
@@ -1273,7 +1273,7 @@ const Scheduling: React.FC = () => {
                 </button>
                 <button
                   className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg font-semibold hover:bg-gray-400 transition"
-                  onClick={() => setShowDelayedPopup({poId: '', open: false})}
+                  onClick={() => setShowDelayedPopup({ poId: '', open: false })}
                 >
                   Cancel
                 </button>

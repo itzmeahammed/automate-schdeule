@@ -1,18 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { getDashboardMetrics, generateAlerts, getPOProgress, getPOTimeProgress, getAutoPOStatus } from '../../utils/scheduling';
+import { getDashboardMetrics, generateAlerts, getPOTimeProgress, getAutoPOStatus } from '../../utils/scheduling';
 import { 
-  TrendingUp, 
-  Clock, 
   CheckCircle, 
   AlertTriangle, 
   Package, 
   DollarSign,
-  Target,
-  Zap,
   Award,
   Activity,
-  Users,
   Settings,
   RefreshCw,
   Calendar,
@@ -33,7 +28,7 @@ const Dashboard: React.FC = () => {
   const [metrics, setMetrics] = useState(getDashboardMetrics(purchaseOrders, scheduleItems, machines));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [timeRange, setTimeRange] = useState<'today' | 'week' | 'month'>('today');
-  const navigate = useNavigate();
+    const navigate = useNavigate();
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
   const [productFilter, setProductFilter] = useState<string>('');
@@ -46,7 +41,7 @@ const Dashboard: React.FC = () => {
     setMetrics(newMetrics);
     
     // Generate and update alerts
-    const newAlerts = generateAlerts(purchaseOrders, products, machines, scheduleItems);
+    const newAlerts = generateAlerts(purchaseOrders, machines, scheduleItems);
     setAlerts(newAlerts);
   }, [purchaseOrders, scheduleItems, machines, products, setAlerts]);
 
@@ -315,32 +310,25 @@ const Dashboard: React.FC = () => {
               <div className="space-y-4">
                 {filteredPurchaseOrders.slice(0, 6).map((po) => {
                   const product = products.find(p => p.id === po.productId);
-                  // Find all schedule items for this PO
-                  const poScheduleItems = scheduleItems.filter(item => item.poId === po.id);
-                  // Find the current in-progress or paused item (or the latest one if none)
-                  let currentItem = poScheduleItems.find(item => item.status === 'in-progress' || item.status === 'paused');
-                  if (!currentItem && poScheduleItems.length > 0) {
-                    // If all completed, show 100%, else show 0%
-                    if (poScheduleItems.every(item => item.status === 'completed')) {
-                      currentItem = poScheduleItems[poScheduleItems.length - 1];
-                    } else {
-                      currentItem = poScheduleItems.find(item => item.status === 'scheduled') || poScheduleItems[0];
+                  const poStatus = getAutoPOStatus(po, scheduleItems);
+                  let progress = 0;
+                  if (poStatus === 'completed') {
+                    progress = 100;
+                  } else {
+                    const poScheduleItems = scheduleItems.filter(item => item.poId === po.id);
+                    const currentItem = poScheduleItems.find(item => item.status === 'in-progress' || item.status === 'paused');
+                    if (currentItem) {
+                      progress = getPOTimeProgress(po.id, scheduleItems);
+                    } else if (poScheduleItems.length > 0 && poScheduleItems.every(item => item.status === 'completed')) {
+                      progress = 100;
                     }
                   }
-                  // Calculate progress as in Scheduling.tsx
-                  let progress = 0;
-                  if (currentItem) {
-                    let start = new Date(currentItem.actualStartTime || currentItem.startDate);
-                    let end = new Date(currentItem.actualEndTime || currentItem.endDate);
-                    let now = new Date();
-                    if (now <= start) progress = 0;
-                    else if (now >= end) progress = 100;
-                    else progress = Math.round(((now.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100);
-                  }
+
+                  console.log(`PO #${po.poNumber} - Status: ${poStatus}, Progress: ${progress}`);
                   return (
-                    <div key={po.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
+                    <div key={po.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
                       <div className="flex items-center space-x-4">
-                        <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center">
+                        <div className="p-3 rounded-full bg-gradient-to-br from-blue-400 to-blue-500">
                           <Package size={20} className="text-white" />
                         </div>
                         <div>
@@ -350,7 +338,7 @@ const Dashboard: React.FC = () => {
                         </div>
                       </div>
                       <div className="text-right space-y-2">
-                        <span className={`inline-flex px-3 py-1 text-xs font-medium rounded-full border ${getStatusColor(getAutoPOStatus(po, scheduleItems))}`}> {getAutoPOStatus(po, scheduleItems)} </span>
+                        <span className={`inline-flex px-3 py-1 text-xs font-medium rounded-full border ${getStatusColor(poStatus)}`}> {poStatus} </span>
                         <div className="w-24">
                           <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
                             <span>Progress</span>

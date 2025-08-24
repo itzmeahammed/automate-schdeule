@@ -6,7 +6,7 @@ import { Plus, Edit2, Trash2, Save, X, AlertTriangle, CheckCircle, Info, Copy } 
 import { ScheduleConflict, getAutoPOStatus } from '../../utils/scheduling';
 
 const PurchaseOrders: React.FC = () => {
-  const { purchaseOrders, products, machines, user, addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, shifts, updateMachine, setScheduleItems, scheduleItems, holidays, addSystemNotification } = useApp();
+  const { purchaseOrders, products, machines, addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, shifts, updateMachine, setScheduleItems, scheduleItems, holidays, addSystemNotification } = useApp();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<PurchaseOrder>>({
@@ -255,25 +255,6 @@ console.log(purchaseOrders , "hello");
     }
   };
 
-  const checkPOConflicts = (po: PurchaseOrder) => {
-    // Only check for conflicts with this PO
-    const { conflicts } = generateScheduleWithConflicts(
-      [...purchaseOrders, po],
-      products,
-      machines,
-      shifts,
-      holidays
-    );
-    // Only show conflicts where the new PO is the newPO
-    const relevantConflicts = conflicts.filter(c => c.newPO.id === po.id);
-    if (relevantConflicts.length > 0) {
-      setConflicts(relevantConflicts);
-      setPendingPO(po);
-      setShowConflictModal(true);
-      return true;
-    }
-    return false;
-  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
