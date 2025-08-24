@@ -277,7 +277,7 @@ export function getPOTimeProgress(poId: string, scheduleItems: ScheduleItem[]): 
 export function getAutoPOStatus(po: PurchaseOrder, scheduleItems: ScheduleItem[]): PurchaseOrder['status'] {
   const items = scheduleItems.filter(item => item.poId === po.id);
   if (items.length === 0) return po.status; // fallback to current status
-  if (items.every(item => item.status === 'completed' && item.actualEndTime)) return 'completed';
+  if (items.every(item => item.status === 'completed')) return 'completed';
   if (items.some(item => getAutoStatus(item) === 'delayed')) return 'delayed';
   if (items.some(item => getAutoStatus(item) === 'in-progress')) return 'in-progress';
   return 'pending';
