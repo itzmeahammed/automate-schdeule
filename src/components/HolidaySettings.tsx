@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../contexts/AppContext';
-import { Calendar, Plus, Trash2, RefreshCw, Star, Upload, Download, Edit2, Check, X } from 'lucide-react';
+import { Calendar, Plus, Trash2, RefreshCw, Star, Upload, Download, Edit2, Check, X, Clock, AlertTriangle } from 'lucide-react';
 
 interface HolidayEntry {
   date: string;
@@ -44,6 +44,17 @@ const HolidaySettings: React.FC = () => {
   const [calendarClickReason, setCalendarClickReason] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showRemoveModal, setShowRemoveModal] = useState<{ date: string, reason: string } | null>(null);
+  
+  // Overtime policy settings
+  const [overtimePolicySettings, setOvertimePolicySettings] = useState({
+    holidayOvertimeMultiplier: 2.5, // Holiday overtime multiplier
+    allowHolidayWork: false, // Whether work is allowed on holidays
+    maxHolidayOvertimeHours: 8, // Maximum overtime hours on holidays
+    requireApprovalForHolidayWork: true, // Require approval for holiday work
+    emergencyOverrideAllowed: true // Allow emergency override
+  });
+  
+  const [showOvertimePolicyModal, setShowOvertimePolicyModal] = useState(false);
 
   // Helper to get all Sundays in a year
   const getAllSundays = (year: number): string[] => {
@@ -273,6 +284,9 @@ const HolidaySettings: React.FC = () => {
             </div>
           </div>
           <div className="flex gap-2 flex-wrap items-center mt-4 md:mt-0">
+            <button onClick={() => setShowOvertimePolicyModal(true)} className="flex items-center gap-2 px-4 py-2 bg-orange-100 text-orange-700 rounded-md hover:bg-orange-200 transition-colors" title="Configure overtime policies for holidays">
+              <Clock size={16} /> Overtime Policy
+            </button>
             <button onClick={resetToSundays} className="flex items-center gap-2 px-4 py-2 bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200 transition-colors" title="Reset to Sundays only">
               <RefreshCw size={16} /> Reset
             </button>
@@ -525,8 +539,150 @@ const HolidaySettings: React.FC = () => {
           </div>
         </div>
       )}
+      
+      {/* Overtime Policy Modal */}
+      {showOvertimePolicyModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl p-8 border-2 border-orange-200 max-w-2xl w-full mx-4">
+            <div className="flex items-center gap-3 mb-6">
+              <Clock size={24} className="text-orange-600" />
+              <h3 className="text-2xl font-bold text-orange-900">Holiday Overtime Policy</h3>
+            </div>
+            
+            <div className="space-y-6">
+              {/* Holiday Work Permission */}
+              <div className="bg-orange-50 p-4 rounded-lg border border-orange-200">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="text-sm font-medium text-gray-700">Allow Work on Holidays</label>
+                  <input
+                    type="checkbox"
+                    checked={overtimePolicySettings.allowHolidayWork}
+                    onChange={(e) => setOvertimePolicySettings(prev => ({
+                      ...prev,
+                      allowHolidayWork: e.target.checked
+                    }))}
+                    className="w-4 h-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                  />
+                </div>
+                <p className="text-xs text-gray-600">
+                  When enabled, employees can be scheduled to work on holidays with special overtime rates.
+                </p>
+              </div>
+
+              {overtimePolicySettings.allowHolidayWork && (
+                <>
+                  {/* Holiday Overtime Multiplier */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Holiday Overtime Multiplier
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        max="5"
+                        step="0.1"
+                        value={overtimePolicySettings.holidayOvertimeMultiplier}
+                        onChange={(e) => setOvertimePolicySettings(prev => ({
+                          ...prev,
+                          holidayOvertimeMultiplier: parseFloat(e.target.value)
+                        }))}
+                        className="w-24 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      />
+                      <span className="text-sm text-gray-600">× base rate</span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Multiplier for overtime work performed on holidays (e.g., 2.5× means 250% of base rate)
+                    </p>
+                  </div>
+
+                  {/* Maximum Holiday Overtime Hours */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Maximum Holiday Overtime Hours
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        value={overtimePolicySettings.maxHolidayOvertimeHours}
+                        onChange={(e) => setOvertimePolicySettings(prev => ({
+                          ...prev,
+                          maxHolidayOvertimeHours: parseInt(e.target.value)
+                        }))}
+                        className="w-24 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      />
+                      <span className="text-sm text-gray-600">hours per holiday</span>
+                    </div>
+                  </div>
+
+                  {/* Approval Requirements */}
+                  <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-sm font-medium text-gray-700">Require Approval for Holiday Work</label>
+                      <input
+                        type="checkbox"
+                        checked={overtimePolicySettings.requireApprovalForHolidayWork}
+                        onChange={(e) => setOvertimePolicySettings(prev => ({
+                          ...prev,
+                          requireApprovalForHolidayWork: e.target.checked
+                        }))}
+                        className="w-4 h-4 text-yellow-600 focus:ring-yellow-500 border-gray-300 rounded"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-600">
+                      When enabled, all holiday work requires management approval before scheduling.
+                    </p>
+                  </div>
+
+                  {/* Emergency Override */}
+                  <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle size={16} className="text-red-600" />
+                        <label className="text-sm font-medium text-gray-700">Emergency Override Allowed</label>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={overtimePolicySettings.emergencyOverrideAllowed}
+                        onChange={(e) => setOvertimePolicySettings(prev => ({
+                          ...prev,
+                          emergencyOverrideAllowed: e.target.checked
+                        }))}
+                        className="w-4 h-4 text-red-600 focus:ring-red-500 border-gray-300 rounded"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-600">
+                      Allows supervisors to override holiday work restrictions in emergency situations.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex gap-3 justify-end mt-8">
+              <button
+                onClick={() => setShowOvertimePolicyModal(false)}
+                className="px-6 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowOvertimePolicyModal(false);
+                  setMessage({ type: 'success', text: 'Overtime policy settings updated.' });
+                }}
+                className="px-6 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+              >
+                Save Policy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-export default HolidaySettings; 
+export default HolidaySettings;

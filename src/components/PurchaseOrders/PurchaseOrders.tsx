@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { PurchaseOrder } from '../../types';
 import { checkDeliveryFeasibility, generateScheduleWithConflicts } from '../../utils/scheduling';
-import { Plus, Edit2, Trash2, Save, X, AlertTriangle, CheckCircle, Info, Copy } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, X, AlertTriangle, CheckCircle, Info, Copy, Clock } from 'lucide-react';
 import { ScheduleConflict, getAutoPOStatus } from '../../utils/scheduling';
 
 const PurchaseOrders: React.FC = () => {
@@ -53,6 +53,17 @@ console.log(purchaseOrders , "hello");
     if (days <= 7) return 'high';
     if (days <= 14) return 'medium';
     return 'low';
+  };
+
+  const getPOOvertimeInfo = (poId: string) => {
+    const poScheduleItems = scheduleItems.filter(item => item.poId === poId);
+    const totalOvertimeHours = poScheduleItems.reduce((total, item) => {
+      return total + (item.actualOvertimeHours || 0);
+    }, 0);
+    const overtimeRecords = poScheduleItems.reduce((total, item) => {
+      return total + (item.overtimeRecords?.length || 0);
+    }, 0);
+    return { totalOvertimeHours, overtimeRecords };
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -808,6 +819,9 @@ console.log(purchaseOrders , "hello");
                   Priority
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Overtime
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
                 </th>
               </tr>
@@ -817,6 +831,7 @@ console.log(purchaseOrders , "hello");
                 const product = products.find(p => p.id === po.productId);
                 // Get the auto status for this PO
                 const autoStatus = getAutoPOStatus(po, scheduleItems || []);
+                const overtimeInfo = getPOOvertimeInfo(po.id);
                 return (
                   <tr key={po.id}>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
@@ -860,6 +875,17 @@ console.log(purchaseOrders , "hello");
                       <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getPriorityColor(po.priority)}`}>
                         {po.priority}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {overtimeInfo.totalOvertimeHours > 0 ? (
+                        <div className="flex items-center gap-1 text-orange-600">
+                          <Clock size={14} />
+                          <span className="font-medium">{overtimeInfo.totalOvertimeHours.toFixed(1)}h</span>
+                          <span className="text-xs text-gray-500">({overtimeInfo.overtimeRecords} records)</span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">No overtime</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       <div className="flex items-center gap-2">
