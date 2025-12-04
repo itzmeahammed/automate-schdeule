@@ -324,7 +324,6 @@ const Dashboard: React.FC = () => {
                     }
                   }
 
-                  console.log(`PO #${po.poNumber} - Status: ${poStatus}, Progress: ${progress}`);
                   return (
                     <div key={po.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
                       <div className="flex items-center space-x-4">

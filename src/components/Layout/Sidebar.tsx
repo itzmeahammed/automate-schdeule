@@ -30,6 +30,7 @@ const rolePermissions = {
     notifications: true,
     alerts: true,
     holidays: true,
+    'shift-management': true,
     settings: true,
   },
   admin: {
@@ -41,6 +42,7 @@ const rolePermissions = {
     notifications: true,
     alerts: true,
     holidays: true,
+    'shift-management': true,
     settings: true,
   },
   operator: {
@@ -52,6 +54,7 @@ const rolePermissions = {
     notifications: true,
     alerts: true,
     holidays: false,
+    'shift-management': false,
     settings: true,
   },
 };
@@ -130,6 +133,13 @@ const Sidebar: React.FC = () => {
       icon: Calendar,
       description: 'Manage company holidays',
       path: '/holidays',
+    },
+    { 
+      id: 'shift-management', 
+      label: 'Shift Management', 
+      icon: Clock,
+      description: 'Configure shift timing and breaks',
+      path: '/shift-management',
     },
     { 
       id: 'settings', 

@@ -9,6 +9,7 @@ import Notifications from './components/Notifications/Notifications';
 import Alerts from './components/Alerts/Alerts';
 import HolidaySettings from './components/HolidaySettings';
 import Settings from './components/Settings/Settings';
+import ShiftManagement from './components/ShiftManagement/ShiftManagement';
 import { AppProvider, useApp } from './contexts/AppContext';
 import SignIn from './components/Auth/SignIn';
 import SignUp from './components/Auth/SignUp';
@@ -24,6 +25,7 @@ const rolePermissions = {
     notifications: true,
     alerts: true,
     holidays: true,
+    'shift-management': true,
   },
   admin: {
     dashboard: true,
@@ -34,6 +36,7 @@ const rolePermissions = {
     notifications: true,
     alerts: true,
     holidays: true,
+    'shift-management': true,
   },
   operator: {
     dashboard: true,
@@ -44,6 +47,7 @@ const rolePermissions = {
     notifications: true,
     alerts: true,
     holidays: false,
+    'shift-management': false,
   },
 };
 
@@ -125,6 +129,7 @@ function AuthGate() {
             <Route path="/notifications" element={<ProtectedRoute page="notifications"><Notifications /></ProtectedRoute>} />
             <Route path="/alerts" element={<ProtectedRoute page="alerts"><Alerts /></ProtectedRoute>} />
             <Route path="/holidays" element={<ProtectedRoute page="holidays"><HolidaySettings /></ProtectedRoute>} />
+            <Route path="/shift-management" element={<ProtectedRoute page="shift-management"><ShiftManagement /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute page="dashboard"><Settings /></ProtectedRoute>} />
             {/* Add login and signup routes for unauthenticated users */}
             <Route path="/login" element={<SignIn onSignIn={() => navigate('/dashboard')} />} />

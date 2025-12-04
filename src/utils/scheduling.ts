@@ -1,24 +1,222 @@
-import { Machine, Product, PurchaseOrder, ScheduleItem, Shift, Alert } from '../types';
+import { Machine, Product, PurchaseOrder, ScheduleItem, Shift, Alert, ProcessDelay } from '../types';
 
-// Helper function to calculate working hours from shift timing
-export const calculateWorkingHoursFromShift = (shiftTiming: string): number => {
-  if (shiftTiming === 'Custom') return 8; // Default for custom shifts
+// Enhanced helper function to calculate working hours from shift timing
+export const calculateWorkingHoursFromShift = (shiftTiming: string | Shift): number => {
+  // Handle legacy string format
+  if (typeof shiftTiming === 'string') {
+    if (shiftTiming === 'Custom') return 8; // Default for custom shifts
+    
+    const [start, end] = shiftTiming.split('-');
+    if (!start || !end) return 8;
+    
+    const startTime = new Date(`2000-01-01T${start}:00`);
+    const endTime = new Date(`2000-01-01T${end}:00`);
+    
+    // Handle overnight shifts
+    if (endTime < startTime) {
+      endTime.setDate(endTime.getDate() + 1);
+    }
+    
+    const diffMs = endTime.getTime() - startTime.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
+    
+    return Math.round(diffHours * 10) / 10; // Round to 1 decimal place
+  }
   
-  const [start, end] = shiftTiming.split('-');
-  if (!start || !end) return 8;
+  // Handle new Shift object format
+  const timing = shiftTiming.timing || {
+    startTime: shiftTiming.startTime || '09:00',
+    endTime: shiftTiming.endTime || '17:00',
+    allowFlexibleTiming: false,
+    overtimeAllowed: false,
+    maxOvertimeHours: 0
+  };
   
-  const startTime = new Date(`2000-01-01T${start}:00`);
-  const endTime = new Date(`2000-01-01T${end}:00`);
+  const startTime = new Date(`2000-01-01T${timing.startTime}:00`);
+  const endTime = new Date(`2000-01-01T${timing.endTime}:00`);
   
   // Handle overnight shifts
   if (endTime < startTime) {
     endTime.setDate(endTime.getDate() + 1);
   }
   
-  const diffMs = endTime.getTime() - startTime.getTime();
-  const diffHours = diffMs / (1000 * 60 * 60);
+  let totalHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
   
-  return Math.round(diffHours * 10) / 10; // Round to 1 decimal place
+  // Subtract break times
+  if (shiftTiming.breakTimes) {
+    const totalBreakMinutes = shiftTiming.breakTimes
+      .filter(breakTime => !breakTime.isPaid) // Only subtract unpaid breaks
+      .reduce((total, breakTime) => total + breakTime.duration, 0);
+    totalHours -= totalBreakMinutes / 60;
+  }
+  
+  return Math.round(totalHours * 10) / 10;
+};
+
+// Calculate delay hours based on ProcessDelay type
+export const calculateProcessDelay = (delay: ProcessDelay): number => {
+  switch (delay.type) {
+    case 'immediate':
+      return 0;
+    case '1day':
+      return 24;
+    case '2day':
+      return 48;
+    case 'chain_complete':
+      return 0; // Will be handled by dependency logic
+    default:
+      return delay.customHours || 0;
+  }
+};
+
+// Calculate next process start time considering delays
+export const calculateNextProcessStartTime = (
+  currentProcessEndTime: Date,
+  processDelay: ProcessDelay | undefined,
+  shifts: Shift[]
+): Date => {
+  if (!processDelay || processDelay.type === 'immediate') {
+    return currentProcessEndTime;
+  }
+
+  if (processDelay.type === 'chain_complete') {
+    // For chain complete, next process starts immediately after current one
+    return currentProcessEndTime;
+  }
+
+  const delayHours = calculateProcessDelay(processDelay);
+  const nextStartTime = new Date(currentProcessEndTime.getTime() + (delayHours * 60 * 60 * 1000));
+  
+  // Adjust to next working shift if delay spans non-working hours
+  const activeShift = shifts.find(s => s.isActive);
+  if (activeShift && activeShift.timing) {
+    const dayName = nextStartTime.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    if (!activeShift.workingDays?.includes(dayName as any)) {
+      // Find next working day
+      let adjustedDate = new Date(nextStartTime);
+      let attempts = 0;
+      while (attempts < 7) {
+        adjustedDate.setDate(adjustedDate.getDate() + 1);
+        const checkDay = adjustedDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+        if (activeShift.workingDays?.includes(checkDay as any)) {
+          // Set to shift start time
+          const [startHour, startMin] = activeShift.timing.startTime.split(':');
+          adjustedDate.setHours(parseInt(startHour), parseInt(startMin), 0, 0);
+          return adjustedDate;
+        }
+        attempts++;
+      }
+    }
+  }
+  
+  return nextStartTime;
+};
+
+// Check if schedule item should auto-update
+export const shouldAutoUpdate = (item: ScheduleItem): boolean => {
+  return item.schedulingMode !== 'manual' && !item.manualOverride;
+};
+
+// Toggle scheduling mode for an item
+export const toggleSchedulingMode = (item: ScheduleItem, mode: 'auto' | 'manual'): ScheduleItem => {
+  return {
+    ...item,
+    schedulingMode: mode,
+    manualOverride: mode === 'manual',
+    lastAutoUpdate: mode === 'auto' ? new Date().toISOString() : item.lastAutoUpdate
+  };
+};
+
+// Update schedule item with manual override protection
+export const updateScheduleItem = (
+  item: ScheduleItem, 
+  updates: Partial<ScheduleItem>, 
+  forceUpdate: boolean = false
+): ScheduleItem => {
+  // Don't auto-update if in manual mode unless forced
+  if (!forceUpdate && !shouldAutoUpdate(item)) {
+    return item;
+  }
+  
+  return {
+    ...item,
+    ...updates,
+    lastAutoUpdate: new Date().toISOString()
+  };
+};
+
+// Calculate overtime hours for a specific work period
+export const calculateOvertimeHours = (actualHours: number, shift: Shift): number => {
+  const regularHours = calculateWorkingHoursFromShift(shift);
+  const overtime = actualHours - regularHours;
+  return overtime > 0 ? Math.round(overtime * 10) / 10 : 0;
+};
+
+// Check if overtime is allowed and within limits
+export const isOvertimeAllowed = (requestedOvertimeHours: number, shift: Shift): boolean => {
+  // Allow overtime if explicitly enabled in shift timing
+  if (shift.timing?.overtimeAllowed) {
+    const maxOvertime = shift.timing.maxOvertimeHours || 12; // Default max 12 hours if not specified
+    return requestedOvertimeHours <= maxOvertime;
+  }
+  
+  // For legacy shifts or when overtime is not explicitly configured,
+  // allow reasonable overtime (up to 4 hours) for operational flexibility
+  const reasonableOvertimeLimit = 4;
+  return requestedOvertimeHours <= reasonableOvertimeLimit && requestedOvertimeHours > 0;
+};
+
+// Calculate overtime cost multiplier
+export const getOvertimeMultiplier = (overtimeHours: number): number => {
+  if (overtimeHours <= 2) return 1.5; // Time and a half for first 2 hours
+  return 2.0; // Double time for hours beyond 2
+};
+
+// Calculate effective working time considering breaks
+export const calculateEffectiveWorkingTime = (shift: Shift, date: Date): number => {
+  const timing = shift.timing || {
+    startTime: shift.startTime || '09:00',
+    endTime: shift.endTime || '17:00',
+    allowFlexibleTiming: false,
+    overtimeAllowed: false,
+    maxOvertimeHours: 0
+  };
+  
+  const dayName = date.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase() as any;
+  if (!shift.workingDays?.includes(dayName)) {
+    return 0; // Not a working day for this shift
+  }
+  
+  const baseHours = calculateWorkingHoursFromShift(shift);
+  
+  // Add potential overtime if allowed
+  if (timing.overtimeAllowed) {
+    return baseHours + (timing.maxOvertimeHours || 0);
+  }
+  
+  return baseHours;
+};
+
+// Calculate total working time including overtime
+export const calculateTotalWorkingTime = (shift: Shift, date: Date, overtimeHours: number = 0): number => {
+  const baseHours = calculateEffectiveWorkingTime(shift, date);
+  if (overtimeHours > 0 && isOvertimeAllowed(overtimeHours, shift)) {
+    return baseHours + overtimeHours;
+  }
+  return baseHours;
+};
+
+// Get overtime schedule for a shift
+export const getOvertimeSchedule = (shift: Shift, date: Date, overtimeHours: number): { start: Date; end: Date } | null => {
+  if (!isOvertimeAllowed(overtimeHours, shift)) return null;
+  
+  const shiftEnd = getShiftEndTime(date, shift);
+  const overtimeEnd = new Date(shiftEnd.getTime() + (overtimeHours * 60 * 60 * 1000));
+  
+  return {
+    start: shiftEnd,
+    end: overtimeEnd
+  };
 };
 
 export const calculateMachineCapacity = (machine: Machine, shifts: Shift[]): number => {
@@ -42,23 +240,99 @@ export const calculateMachineCapacity = (machine: Machine, shifts: Shift[]): num
 };
 
 export const calculateShiftDuration = (shift: Shift): number => {
-  const start = new Date(`2000-01-01 ${shift.startTime}`);
-  let end = new Date(`2000-01-01 ${shift.endTime}`);
+  const timing = shift.timing || {
+    startTime: shift.startTime || '09:00',
+    endTime: shift.endTime || '17:00',
+    allowFlexibleTiming: false,
+    overtimeAllowed: false,
+    maxOvertimeHours: 0
+  };
+  
+  const start = new Date(`2000-01-01 ${timing.startTime}`);
+  let end = new Date(`2000-01-01 ${timing.endTime}`);
   
   // Handle overnight shifts
   if (end <= start) {
     end.setDate(end.getDate() + 1);
   }
   
-  return (end.getTime() - start.getTime()) / (1000 * 60); // Return in minutes
+  let durationMinutes = (end.getTime() - start.getTime()) / (1000 * 60);
+  
+  // Subtract break times from total duration
+  if (shift.breakTimes) {
+    const totalBreakMinutes = shift.breakTimes.reduce((total, breakTime) => {
+      return total + breakTime.duration;
+    }, 0);
+    durationMinutes -= totalBreakMinutes;
+  }
+  
+  return durationMinutes;
 };
 
-export const calculateProductionTime = (product: Product, quantity: number): number => {
-  return product.processFlow.reduce((total, step) => {
-    const setupTime = step.setupTime || 0;
-    const cycleTime = step.cycleTimePerPart * quantity;
-    return total + setupTime + cycleTime;
-  }, 0);
+// Get break times for a specific shift on a given date
+export const getShiftBreakTimes = (shift: Shift, date: Date): { start: Date; end: Date; type: string; isPaid: boolean }[] => {
+  if (!shift.breakTimes) return [];
+  
+  return shift.breakTimes.map(breakTime => {
+    const breakStart = new Date(date);
+    const [startHour, startMinute] = breakTime.start.split(':').map(Number);
+    breakStart.setHours(startHour, startMinute, 0, 0);
+    
+    const breakEnd = new Date(date);
+    const [endHour, endMinute] = breakTime.end.split(':').map(Number);
+    breakEnd.setHours(endHour, endMinute, 0, 0);
+    
+    return {
+      start: breakStart,
+      end: breakEnd,
+      type: breakTime.type,
+      isPaid: breakTime.isPaid
+    };
+  });
+};
+
+export const calculateProductionTime = (product: Product, quantity: number, machines?: Machine[]): number => {
+  // Calculate realistic production time considering machine efficiency and batch processing
+  let totalTime = 0;
+  
+  // Group steps by sequence to handle parallel operations
+  const stepsBySequence = new Map<number, typeof product.processFlow>();
+  product.processFlow.forEach(step => {
+    if (!stepsBySequence.has(step.sequence)) {
+      stepsBySequence.set(step.sequence, []);
+    }
+    stepsBySequence.get(step.sequence)!.push(step);
+  });
+  
+  // Process each sequence level
+  Array.from(stepsBySequence.keys()).sort((a, b) => a - b).forEach(sequence => {
+    const steps = stepsBySequence.get(sequence)!;
+    let sequenceTime = 0;
+    
+    steps.forEach(step => {
+      const machine = machines?.find(m => m.id === step.machineId);
+      const efficiency = machine?.efficiency || 100;
+      
+      const setupTime = step.setupTime || 0;
+      // Optimize for realistic manufacturing - setup once, then continuous production
+      const cycleTime = step.cycleTimePerPart * quantity;
+      
+      // Apply machine efficiency and realistic production rates
+      const efficiencyFactor = efficiency / 100;
+      const adjustedCycleTime = cycleTime / efficiencyFactor;
+      
+      // For high quantities, apply economies of scale (reduce per-unit time)
+      const scaleReduction = quantity > 50 ? 0.85 : quantity > 20 ? 0.9 : 1.0;
+      const stepTime = setupTime + (adjustedCycleTime * scaleReduction);
+      
+      // For parallel steps in same sequence, take maximum time
+      sequenceTime = Math.max(sequenceTime, stepTime);
+    });
+    
+    totalTime += sequenceTime;
+  });
+  
+  return totalTime;
 };
 
 export const calculateEstimatedCost = (product: Product, quantity: number): number => {
@@ -95,7 +369,7 @@ export const checkDeliveryFeasibility = (
       alternatives: []
     };
   }
-  const productionTime = calculateProductionTime(product, po.quantity);
+  const productionTime = calculateProductionTime(product, po.quantity, machines);
   const workingDays = calculateWorkingDays(poDate, deliveryDate, holidays);
   if (workingDays === 0) {
     return {
@@ -277,7 +551,7 @@ export function getPOTimeProgress(poId: string, scheduleItems: ScheduleItem[]): 
 export function getAutoPOStatus(po: PurchaseOrder, scheduleItems: ScheduleItem[]): PurchaseOrder['status'] {
   const items = scheduleItems.filter(item => item.poId === po.id);
   if (items.length === 0) return po.status; // fallback to current status
-  if (items.every(item => item.status === 'completed' && item.actualEndTime)) return 'completed';
+  if (items.every(item => item.status === 'completed')) return 'completed';
   if (items.some(item => getAutoStatus(item) === 'delayed')) return 'delayed';
   if (items.some(item => getAutoStatus(item) === 'in-progress')) return 'in-progress';
   return 'pending';
@@ -343,7 +617,12 @@ export const generateScheduleWithConflicts = (
 
         const setupTime = step.setupTime || 0;
         const cycleTime = step.cycleTimePerPart * po.quantity;
-        const totalTime = setupTime + cycleTime;
+        
+        // Apply machine efficiency and scale optimization
+        const efficiencyFactor = machine.efficiency / 100;
+        const adjustedCycleTime = cycleTime / efficiencyFactor;
+        const scaleReduction = po.quantity > 50 ? 0.85 : po.quantity > 20 ? 0.9 : 1.0;
+        const totalTime = setupTime + (adjustedCycleTime * scaleReduction);
 
         // The next step can't start before the previous one ends AND the machine is free.
         const earliestPossibleStart = new Date(Math.max(
@@ -401,8 +680,10 @@ export const generateScheduleWithConflicts = (
                   processStep: step.sequence,
                   allocatedTime: totalTime,
                   status: 'scheduled',
+                  priority: po.priority,
                   efficiency: machine.efficiency,
                   qualityScore: 0,
+                  progress: 0,
                   notes: step.isOutsourced ? 'Outsourced operation' : ''
                 },
                 userMessage: '',
@@ -423,8 +704,10 @@ export const generateScheduleWithConflicts = (
           processStep: step.sequence,
           allocatedTime: totalTime,
           status: 'scheduled',
+          priority: po.priority,
           efficiency: machine.efficiency,
           qualityScore: 0,
+          progress: 0,
           notes: step.isOutsourced ? 'Outsourced operation' : ''
         };
         
@@ -468,8 +751,10 @@ export const generateScheduleWithConflicts = (
         processStep: scheduledItems[scheduledItems.length - 1].processStep,
         allocatedTime: scheduledItems.reduce((sum, item) => sum + item.allocatedTime, 0),
         status: 'scheduled',
+        priority: po.priority,
         efficiency: scheduledItems[0].efficiency,
         qualityScore: 0,
+        progress: 0,
         notes: userMessage
       },
       userMessage, // for UI
@@ -533,10 +818,28 @@ export const findNextAvailableSlot = (
 
 export const findCurrentShift = (time: Date, shifts: Shift[]): Shift | null => {
   const timeString = time.toTimeString().substring(0, 5);
+  const dayName = time.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase() as any;
   
   return shifts.find(shift => {
-    const startTime = shift.startTime;
-    const endTime = shift.endTime;
+    // Check if shift is active and includes this day
+    if (!shift.isActive) return false;
+    if (shift.workingDays && !shift.workingDays.includes(dayName)) return false;
+    
+    const timing = shift.timing || {
+      startTime: shift.startTime || '09:00',
+      endTime: shift.endTime || '17:00',
+      allowFlexibleTiming: false,
+      overtimeAllowed: false,
+      maxOvertimeHours: 0
+    };
+    
+    const startTime = timing.startTime;
+    const endTime = timing.endTime;
+    
+    // Handle flexible timing
+    if (timing.allowFlexibleTiming && timing.coreHoursStart && timing.coreHoursEnd) {
+      return timeString >= timing.coreHoursStart && timeString <= timing.coreHoursEnd;
+    }
     
     if (startTime <= endTime) {
       return timeString >= startTime && timeString < endTime;
@@ -547,14 +850,46 @@ export const findCurrentShift = (time: Date, shifts: Shift[]): Shift | null => {
   }) || null;
 };
 
+// Check if current time is within a break period
+export const isWithinBreakTime = (time: Date, shift: Shift): { inBreak: boolean; breakInfo?: any } => {
+  if (!shift.breakTimes) return { inBreak: false };
+  
+  const timeString = time.toTimeString().substring(0, 5);
+  
+  for (const breakTime of shift.breakTimes) {
+    if (timeString >= breakTime.start && timeString <= breakTime.end) {
+      return {
+        inBreak: true,
+        breakInfo: breakTime
+      };
+    }
+  }
+  
+  return { inBreak: false };
+};
+
 export const getShiftEndTime = (currentTime: Date, shift: Shift): Date => {
+  const timing = shift.timing || {
+    startTime: shift.startTime || '09:00',
+    endTime: shift.endTime || '17:00',
+    allowFlexibleTiming: false,
+    overtimeAllowed: false,
+    maxOvertimeHours: 0
+  };
+  
   const endTime = new Date(currentTime);
-  const [hours, minutes] = shift.endTime.split(':').map(Number);
+  const [hours, minutes] = timing.endTime.split(':').map(Number);
   endTime.setHours(hours, minutes, 0, 0);
   
   // Handle overnight shifts
-  if (shift.startTime > shift.endTime && endTime <= currentTime) {
+  if (timing.startTime > timing.endTime && endTime <= currentTime) {
     endTime.setDate(endTime.getDate() + 1);
+  }
+  
+  // Add overtime if allowed and needed
+  if (timing.overtimeAllowed && timing.maxOvertimeHours > 0) {
+    // This would be determined by actual scheduling needs
+    // For now, just return the regular end time
   }
   
   return endTime;
@@ -644,18 +979,70 @@ export const calculateShiftBasedEndDate = (
 };
 
 export const getNextShiftStart = (currentTime: Date, shifts: Shift[]): Date => {
-  const nextDay = new Date(currentTime);
-  nextDay.setDate(nextDay.getDate() + 1);
+  const activeShifts = shifts.filter(shift => shift.isActive);
   
-  const earliestShift = shifts.reduce((earliest, shift) => {
-    const [hours, minutes] = shift.startTime.split(':').map(Number);
-    const shiftStart = new Date(nextDay);
+  // Try to find next shift on the same day first
+  const currentDayName = currentTime.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase() as any;
+  const todayShifts = activeShifts.filter(shift => 
+    shift.workingDays?.includes(currentDayName)
+  );
+  
+  for (const shift of todayShifts) {
+    const timing = shift.timing || {
+      startTime: shift.startTime || '09:00',
+      endTime: shift.endTime || '17:00',
+      allowFlexibleTiming: false,
+      overtimeAllowed: false,
+      maxOvertimeHours: 0
+    };
+    
+    const [hours, minutes] = timing.startTime.split(':').map(Number);
+    const shiftStart = new Date(currentTime);
     shiftStart.setHours(hours, minutes, 0, 0);
     
-    return !earliest || shiftStart < earliest ? shiftStart : earliest;
-  }, null as Date | null);
+    if (shiftStart > currentTime) {
+      return shiftStart;
+    }
+  }
   
-  return earliestShift || nextDay;
+  // Find next day with shifts
+  let nextDay = new Date(currentTime);
+  nextDay.setDate(nextDay.getDate() + 1);
+  
+  for (let i = 0; i < 7; i++) { // Check up to 7 days ahead
+    const dayName = nextDay.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase() as any;
+    const dayShifts = activeShifts.filter(shift => 
+      shift.workingDays?.includes(dayName)
+    );
+    
+    if (dayShifts.length > 0) {
+      const earliestShift = dayShifts.reduce((earliest, shift) => {
+        const timing = shift.timing || {
+          startTime: shift.startTime || '09:00',
+          endTime: shift.endTime || '17:00',
+          allowFlexibleTiming: false,
+          overtimeAllowed: false,
+          maxOvertimeHours: 0
+        };
+        
+        const [hours, minutes] = timing.startTime.split(':').map(Number);
+        const shiftStart = new Date(nextDay);
+        shiftStart.setHours(hours, minutes, 0, 0);
+        
+        return !earliest || shiftStart < earliest ? shiftStart : earliest;
+      }, null as Date | null);
+      
+      if (earliestShift) return earliestShift;
+    }
+    
+    nextDay.setDate(nextDay.getDate() + 1);
+  }
+  
+  // Fallback to next day at 9 AM
+  const fallback = new Date(currentTime);
+  fallback.setDate(fallback.getDate() + 1);
+  fallback.setHours(9, 0, 0, 0);
+  return fallback;
 };
 
 // Helper function to calculate start date based on shift timing

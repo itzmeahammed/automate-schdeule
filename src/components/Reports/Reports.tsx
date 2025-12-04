@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { getDashboardMetrics, calculateMachineEfficiency, getAutoPOStatus } from '../../utils/scheduling';
+import { getDashboardMetrics, calculateMachineEfficiency, getAutoPOStatus, getOvertimeMultiplier } from '../../utils/scheduling';
 import { FileText, Download, TrendingUp, Calendar, Package, User, AlertTriangle, CheckCircle, Clock, MapPin, Wrench, BarChart3 } from 'lucide-react';
 import { Calendar as CalendarIcon } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -9,14 +9,32 @@ import autoTable from 'jspdf-autotable';
 import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType, AlignmentType, BorderStyle } from 'docx';
 
 const Reports: React.FC = () => {
-  const { purchaseOrders, products, machines, scheduleItems, user, holidays } = useApp();
-  const [reportType, setReportType] = useState<'summary' | 'detailed' | 'machine-utilization'>('summary');
+  const { purchaseOrders, products, machines, scheduleItems, user, holidays, shifts } = useApp();
+  const [reportType, setReportType] = useState<'summary' | 'detailed' | 'machine-utilization' | 'overtime'>('summary');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
 
   const metrics = getDashboardMetrics(purchaseOrders, scheduleItems);
+
+  // Calculate overtime metrics
+  const overtimeMetrics = {
+    totalOvertimeHours: scheduleItems.reduce((total, item) => {
+      return total + (item.plannedOvertimeHours || 0) + (item.actualOvertimeHours || 0);
+    }, 0),
+    totalOvertimeRecords: scheduleItems.reduce((total, item) => {
+      return total + (item.overtimeRecords?.length || 0);
+    }, 0),
+    overtimeCost: scheduleItems.reduce((total, item) => {
+      const records = item.overtimeRecords || [];
+      return total + records.reduce((recordTotal, record) => {
+        return recordTotal + (record.actualOvertimeHours || record.plannedOvertimeHours) * record.costMultiplier;
+      }, 0);
+    }, 0),
+    averageOvertimePerItem: scheduleItems.length > 0 ? 
+      scheduleItems.reduce((total, item) => total + (item.plannedOvertimeHours || 0), 0) / scheduleItems.length : 0
+  };
 
   const generateReport = async (format: 'pdf' | 'excel' | 'word') => {
     // Prepare tabular data for export
@@ -30,6 +48,9 @@ const Reports: React.FC = () => {
       ['Machines', machines.length],
       ['Products', products.length],
       ['Schedule Items', scheduleItems.length],
+      ['Total Overtime Hours', overtimeMetrics.totalOvertimeHours.toFixed(1)],
+      ['Overtime Records', overtimeMetrics.totalOvertimeRecords],
+      ['Estimated Overtime Cost', `$${overtimeMetrics.overtimeCost.toFixed(2)}`],
     ];
     const today = new Date().toLocaleDateString();
     const company = user?.name || 'Manufacturing Company';
@@ -788,6 +809,7 @@ const Reports: React.FC = () => {
         'Status': item.status,
         'Efficiency (%)': item.efficiency,
         'Quality Score': item.qualityScore,
+        'Progress (%)': item.progress || 0,
         'Notes': item.notes || ''
       };
     });
@@ -874,6 +896,162 @@ const Reports: React.FC = () => {
     }
   };
 
+  // Overtime Report Component
+  const OvertimeReport = () => {
+    const overtimeData = scheduleItems.filter(item => 
+      item.overtimeRecords && item.overtimeRecords.length > 0
+    );
+
+    const totalOvertimeHours = overtimeData.reduce((total, item) => {
+      return total + (item.actualOvertimeHours || 0);
+    }, 0);
+
+    const totalOvertimeRecords = overtimeData.reduce((total, item) => {
+      return total + (item.overtimeRecords?.length || 0);
+    }, 0);
+
+    const estimatedOvertimeCost = overtimeData.reduce((total, item) => {
+      if (!item.overtimeRecords) return total;
+      
+      return total + item.overtimeRecords.reduce((recordTotal, record) => {
+        const shift = shifts.find(s => s.id === record.shiftId);
+        if (!shift) return recordTotal;
+        
+        const multiplier = getOvertimeMultiplier(record.actualOvertimeHours || record.plannedOvertimeHours);
+        const baseCost = 25; // Base hourly rate
+        return recordTotal + ((record.actualOvertimeHours || record.plannedOvertimeHours) * baseCost * multiplier);
+      }, 0);
+    }, 0);
+
+    const averageOvertimePerItem = overtimeData.length > 0 
+      ? totalOvertimeHours / overtimeData.length 
+      : 0;
+
+    return (
+      <div className="space-y-6">
+        {/* Overtime Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-gradient-to-br from-orange-50 to-orange-100 p-6 rounded-lg border border-orange-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-orange-600">Total Overtime Hours</p>
+                <p className="text-2xl font-bold text-orange-900">{totalOvertimeHours.toFixed(1)}</p>
+              </div>
+              <Clock className="h-8 w-8 text-orange-500" />
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-6 rounded-lg border border-purple-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-purple-600">Overtime Records</p>
+                <p className="text-2xl font-bold text-purple-900">{totalOvertimeRecords}</p>
+              </div>
+              <FileText className="h-8 w-8 text-purple-500" />
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-green-50 to-green-100 p-6 rounded-lg border border-green-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-green-600">Estimated Cost</p>
+                <p className="text-2xl font-bold text-green-900">${estimatedOvertimeCost.toFixed(2)}</p>
+              </div>
+              <TrendingUp className="h-8 w-8 text-green-500" />
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-6 rounded-lg border border-blue-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-blue-600">Avg Per Item</p>
+                <p className="text-2xl font-bold text-blue-900">{averageOvertimePerItem.toFixed(1)}h</p>
+              </div>
+              <BarChart3 className="h-8 w-8 text-blue-500" />
+            </div>
+          </div>
+        </div>
+
+        {/* Detailed Overtime Records */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h3 className="text-lg font-medium text-gray-900">Overtime Records</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Schedule Item
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Date
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Hours
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Reason
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Multiplier
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Estimated Cost
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {overtimeData.map((item) => 
+                  item.overtimeRecords?.map((record, index) => {
+                    const po = purchaseOrders.find(po => po.id === item.poId);
+                    const product = products.find(p => p.id === item.productId);
+                    const multiplier = getOvertimeMultiplier(record.actualOvertimeHours || record.plannedOvertimeHours);
+                    const baseCost = 25;
+                    const estimatedCost = (record.actualOvertimeHours || record.plannedOvertimeHours) * baseCost * multiplier;
+                    
+                    return (
+                      <tr key={`${item.id}-${index}`} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-medium text-gray-900">
+                            {po?.poNumber || 'N/A'}
+                          </div>
+                          <div className="text-sm text-gray-500">
+                            {product?.productName || 'Unknown'} - {item.processStep}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {new Date(record.date).toLocaleDateString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {record.actualOvertimeHours || record.plannedOvertimeHours}h
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {record.reason}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {multiplier}x
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          ${estimatedCost.toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+            {overtimeData.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                No overtime records found
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // 3. Add buttons for detailed report export in the UI
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
@@ -951,6 +1129,16 @@ const Reports: React.FC = () => {
           >
             Machine Utilization
           </button>
+          <button
+            onClick={() => setReportType('overtime')}
+            className={`px-4 py-2 rounded-md transition-colors ${
+              reportType === 'overtime'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            Overtime Report
+          </button>
         </div>
       </div>
 
@@ -959,6 +1147,7 @@ const Reports: React.FC = () => {
         {reportType === 'summary' && <SummaryReport />}
         {reportType === 'detailed' && <DetailedReport />}
         {reportType === 'machine-utilization' && <MachineUtilizationReport />}
+        {reportType === 'overtime' && <OvertimeReport />}
       </div>
     </div>
   );

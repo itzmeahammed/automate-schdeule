@@ -1,23 +1,20 @@
 import React, { useState, useEffect, useReducer } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { generateScheduleWithConflicts, optimizeSchedule, getAutoStatus, ScheduleConflict, checkDeliveryFeasibility, getAutoPOStatus, calculateWorkingHoursFromShift } from '../../utils/scheduling';
+import { generateScheduleWithConflicts, getAutoStatus, ScheduleConflict, checkDeliveryFeasibility, isOvertimeAllowed, getOvertimeMultiplier, calculateProcessDelay, calculateNextProcessStartTime, toggleSchedulingMode } from '../../utils/scheduling';
 import GanttChart from './GanttChart';
-import { ScheduleItem, PurchaseOrder as SalesOrder } from '../../types';
+import { ScheduleItem, PurchaseOrder as SalesOrder, OvertimeRecord, ProcessDelay } from '../../types';
 import { 
   Calendar, 
-  Filter, 
-  Download, 
-  RefreshCw, 
-  Settings, 
+  Clock, 
   Play, 
-  Pause, 
-  RotateCcw,
-  Zap,
+  X,
+  RefreshCw,
+  Info,
   Target,
-  Clock,
-  CheckCircle,
+  Zap,
+  Download,
   HelpCircle,
-  Info
+  CheckCircle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -60,11 +57,15 @@ const Scheduling: React.FC = () => {
   
   const [filteredSchedule, setFilteredSchedule] = useState(scheduleItems);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isOptimizing, setIsOptimizing] = useState(false);
   const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [refreshKey, forceRefresh] = useReducer(x => x + 1, 0);
   const [conflicts, setConflicts] = useState<ScheduleConflict[]>([]);
+  const [showOvertimeModal, setShowOvertimeModal] = useState(false);
+  const [selectedScheduleItem, setSelectedScheduleItem] = useState<ScheduleItem | null>(null);
+  const [overtimeHours, setOvertimeHours] = useState(0);
+  const [overtimeReason, setOvertimeReason] = useState('');
+  const [showProcessDelayModal, setShowProcessDelayModal] = useState(false);
+  const [selectedProcessStep, setSelectedProcessStep] = useState<any>(null);
+  const [processDelay, setProcessDelay] = useState<ProcessDelay>({ type: 'immediate' });
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [editedEndDates, setEditedEndDates] = useState<{ [poId: string]: string }>({});
   const [conflictSearch, setConflictSearch] = useState('');
@@ -72,11 +73,24 @@ const Scheduling: React.FC = () => {
   const [showDelayedPopup, setShowDelayedPopup] = useState<{poId: string, open: boolean}>({poId: '', open: false});
   const [detailsFilter, setDetailsFilter] = useState({ productId: '', machineId: '' });
   const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
+  const [showStatusModal, setShowStatusModal] = useState(false);
+  const [selectedItemForStatus, setSelectedItemForStatus] = useState<ScheduleItem | null>(null);
   const [notes, setNotes] = useState("");
+  const [refreshKey, forceRefresh] = useReducer(x => x + 1, 0);
 
   useEffect(() => {
     if (selectedItem) setNotes(selectedItem.notes || "");
   }, [selectedItem]);
+
+  // Auto-hide toast after 3 seconds
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => {
+        setToast(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   useEffect(() => {
     let filtered = scheduleItems;
@@ -151,17 +165,6 @@ const Scheduling: React.FC = () => {
     }
   };
 
-  const optimizeCurrentSchedule = async () => {
-    setIsOptimizing(true);
-    try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      const optimized = optimizeSchedule(scheduleItems, products);
-      setScheduleItems(optimized);
-    } finally {
-      setIsOptimizing(false);
-    }
-  };
 
   const exportSchedule = async (format: 'excel' | 'word' | 'pdf') => {
     // Export each schedule item (process step) as a separate row
@@ -558,6 +561,140 @@ const Scheduling: React.FC = () => {
     return feasibleDates;
   };
 
+  const handleOvertimeRequest = (item: ScheduleItem) => {
+    setSelectedScheduleItem(item);
+    setShowOvertimeModal(true);
+    setOvertimeHours(0);
+    setOvertimeReason('');
+  };
+
+  const handleProcessDelayConfig = (item: ScheduleItem) => {
+    const product = products.find(p => p.id === item.productId);
+    const processStep = product?.processFlow.find(step => step.sequence === item.processStep);
+    setSelectedProcessStep(processStep);
+    setProcessDelay(processStep?.nextProcessDelay || { type: 'immediate' });
+    setShowProcessDelayModal(true);
+  };
+
+  const toggleItemSchedulingMode = (item: ScheduleItem) => {
+    const newMode = item.schedulingMode === 'manual' ? 'auto' : 'manual';
+    const updatedItem = toggleSchedulingMode(item, newMode);
+    
+    const updatedItems = scheduleItems.map(scheduleItem => 
+      scheduleItem.id === item.id ? updatedItem : scheduleItem
+    );
+    
+    setScheduleItems(updatedItems);
+    setToast({ 
+      type: 'success', 
+      message: `Schedule item switched to ${newMode} mode` 
+    });
+  };
+
+  const handleManualStatusUpdate = (item: ScheduleItem) => {
+    setSelectedItemForStatus(item);
+    setShowStatusModal(true);
+  };
+
+  const updateItemStatus = (newStatus: 'scheduled' | 'in-progress' | 'completed' | 'delayed' | 'paused') => {
+    if (!selectedItemForStatus) return;
+    
+    const now = new Date().toISOString();
+    const updatedItem = {
+      ...selectedItemForStatus,
+      status: newStatus,
+      progress: newStatus === 'completed' ? 100 : 
+                newStatus === 'in-progress' ? (selectedItemForStatus.progress || 0) :
+                newStatus === 'scheduled' ? 0 : selectedItemForStatus.progress,
+      actualStartTime: newStatus === 'in-progress' && !selectedItemForStatus.actualStartTime ? now : selectedItemForStatus.actualStartTime,
+      actualEndTime: newStatus === 'completed' ? now : selectedItemForStatus.actualEndTime,
+      actionHistory: [
+        ...(selectedItemForStatus.actionHistory || []),
+        { action: `status_changed_to_${newStatus}`, timestamp: now, user: user?.name || 'Unknown' }
+      ]
+    };
+    
+    const updatedItems = scheduleItems.map(scheduleItem => 
+      scheduleItem.id === selectedItemForStatus.id ? updatedItem : scheduleItem
+    );
+    
+    setScheduleItems(updatedItems);
+    setShowStatusModal(false);
+    setSelectedItemForStatus(null);
+    setToast({ 
+      type: 'success', 
+      message: `Status updated to ${newStatus}` 
+    });
+  };
+
+
+  const saveProcessDelay = () => {
+    if (!selectedProcessStep) return;
+    
+    // Update the product's process flow with new delay configuration
+    // Note: In a real app, you'd persist this to backend
+    const updatedProducts = products.map(product => ({
+      ...product,
+      processFlow: product.processFlow.map(step => 
+        step.id === selectedProcessStep.id 
+          ? { ...step, nextProcessDelay: processDelay }
+          : step
+      )
+    }));
+    // Products updated in memory for this session
+    console.log('Updated products with process delay:', updatedProducts);
+    setShowProcessDelayModal(false);
+    setToast({ type: 'success', message: 'Process delay configuration saved successfully!' });
+  };
+
+  const submitOvertimeRequest = () => {
+    if (!selectedScheduleItem || overtimeHours <= 0) {
+      alert('Please enter valid overtime hours (greater than 0)');
+      return;
+    }
+    
+    const shift = shifts.find(s => s.isActive); // Get current active shift
+    if (!shift) {
+      alert('No active shift found. Please configure an active shift first.');
+      return;
+    }
+    
+    if (!isOvertimeAllowed(overtimeHours, shift)) {
+      const maxAllowed = shift.timing?.overtimeAllowed ? 
+        (shift.timing.maxOvertimeHours || 12) : 4;
+      alert(`Overtime exceeds maximum allowed hours. Maximum allowed: ${maxAllowed} hours for this shift.`);
+      return;
+    }
+
+    const overtimeRecord: OvertimeRecord = {
+      id: Date.now().toString(),
+      scheduleItemId: selectedScheduleItem.id,
+      shiftId: shift.id,
+      date: new Date().toISOString().split('T')[0],
+      plannedOvertimeHours: overtimeHours,
+      reason: overtimeReason,
+      status: 'planned',
+      costMultiplier: getOvertimeMultiplier(overtimeHours),
+      startTime: selectedScheduleItem.endDate,
+      endTime: new Date(new Date(selectedScheduleItem.endDate).getTime() + (overtimeHours * 60 * 60 * 1000)).toISOString(),
+    };
+
+    const updatedItems = scheduleItems.map(item => {
+      if (item.id === selectedScheduleItem.id) {
+        return {
+          ...item,
+          overtimeRecords: [...(item.overtimeRecords || []), overtimeRecord],
+          plannedOvertimeHours: (item.plannedOvertimeHours || 0) + overtimeHours
+        };
+      }
+      return item;
+    });
+
+    setScheduleItems(updatedItems);
+    setShowOvertimeModal(false);
+  };
+
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-indigo-50/30">
       {/* Toast Notification */}
@@ -588,22 +725,6 @@ const Scheduling: React.FC = () => {
               >
                 <RefreshCw size={16} />
                 <span>Refresh</span>
-              </button>
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-              >
-                <Settings size={16} />
-                <span>Settings</span>
-              </button>
-              
-              <button
-                onClick={optimizeCurrentSchedule}
-                disabled={isOptimizing || scheduleItems.length === 0}
-                className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
-              >
-                <Zap size={16} className={isOptimizing ? 'animate-spin' : ''} />
-                <span>Optimize</span>
               </button>
               
               <button
@@ -978,11 +1099,50 @@ const Scheduling: React.FC = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           <div className="flex items-center space-x-2">
                             <button
-                              onClick={() => setSelectedItem(item)}
-                              className="text-blue-600 hover:text-blue-800"
-                              title="View and edit notes"
+                              onClick={() => toggleItemSchedulingMode(item)}
+                              className={`px-3 py-1 text-white rounded text-sm ${
+                                item.schedulingMode === 'manual' 
+                                  ? 'bg-red-600 hover:bg-red-700' 
+                                  : 'bg-green-600 hover:bg-green-700'
+                              }`}
+                              title={`Switch to ${item.schedulingMode === 'manual' ? 'auto' : 'manual'} mode`}
                             >
-                              <Settings size={16} />
+                              {item.schedulingMode === 'manual' ? (
+                                <>
+                                  <Play size={14} className="inline mr-1" />
+                                  Manual
+                                </>
+                              ) : (
+                                <>
+                                  <Zap size={14} className="inline mr-1" />
+                                  Auto
+                                </>
+                              )}
+                            </button>
+                            {item.schedulingMode === 'manual' && (
+                              <button
+                                onClick={() => handleManualStatusUpdate(item)}
+                                className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                                title="Update status manually"
+                              >
+                                <CheckCircle size={14} className="inline mr-1" />
+                                Status
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleOvertimeRequest(item)}
+                              className="px-3 py-1 bg-orange-600 text-white rounded hover:bg-orange-700 text-sm"
+                              disabled={item.status === 'completed'}
+                            >
+                              <Clock size={14} className="inline mr-1" />
+                              Overtime
+                            </button>
+                            <button
+                              onClick={() => handleProcessDelayConfig(item)}
+                              className="px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+                            >
+                              <Target size={14} className="inline mr-1" />
+                              Process Delay
                             </button>
                           </div>
                         </td>
@@ -1278,6 +1438,310 @@ const Scheduling: React.FC = () => {
                   Cancel
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Overtime Request Modal */}
+      {showOvertimeModal && selectedScheduleItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-gray-900">Request Overtime</h3>
+              <button
+                onClick={() => setShowOvertimeModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Schedule Item
+                </label>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <p className="font-medium">{products.find(p => p.id === selectedScheduleItem.productId)?.productName}</p>
+                  <p className="text-sm text-gray-600">
+                    Machine: {machines.find(m => m.id === selectedScheduleItem.machineId)?.machineName}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    Current End: {new Date(selectedScheduleItem.endDate).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Overtime Hours
+                </label>
+                <input
+                  type="number"
+                  min="0.5"
+                  max="8"
+                  step="0.5"
+                  value={overtimeHours}
+                  onChange={(e) => setOvertimeHours(parseFloat(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Enter hours (0.5 - 8)"
+                />
+                {overtimeHours > 0 && (
+                  <div className="mt-2 p-2 bg-blue-50 rounded-lg">
+                    <p className="text-sm text-blue-700">
+                      Cost Multiplier: {getOvertimeMultiplier(overtimeHours)}x
+                    </p>
+                    <p className="text-sm text-blue-700">
+                      New End Time: {new Date(new Date(selectedScheduleItem.endDate).getTime() + (overtimeHours * 60 * 60 * 1000)).toLocaleString()}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Reason for Overtime
+                </label>
+                <textarea
+                  value={overtimeReason}
+                  onChange={(e) => setOvertimeReason(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  rows={3}
+                  placeholder="Explain why overtime is needed..."
+                />
+              </div>
+
+              <div className="flex justify-end space-x-3 pt-4">
+                <button
+                  onClick={() => setShowOvertimeModal(false)}
+                  className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submitOvertimeRequest}
+                  disabled={overtimeHours <= 0 || !overtimeReason.trim()}
+                  className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Request Overtime
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Process Delay Configuration Modal */}
+      {showProcessDelayModal && selectedProcessStep && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-gray-900">Configure Process Delay</h3>
+              <button
+                onClick={() => setShowProcessDelayModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Process Step
+                </label>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <p className="font-medium">{selectedProcessStep.stepName}</p>
+                  <p className="text-sm text-gray-600">Sequence: {selectedProcessStep.sequence}</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Next Process Start Timing
+                </label>
+                <div className="space-y-3">
+                  <div className="flex items-center">
+                    <input
+                      type="radio"
+                      id="immediate"
+                      name="processDelay"
+                      value="immediate"
+                      checked={processDelay.type === 'immediate'}
+                      onChange={(e) => setProcessDelay({ type: e.target.value as any })}
+                      className="mr-3"
+                    />
+                    <label htmlFor="immediate" className="flex items-center">
+                      <span className="font-medium">Immediate</span>
+                      <span className="ml-2 text-sm text-gray-600">Next process starts right after this one</span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="radio"
+                      id="1day"
+                      name="processDelay"
+                      value="1day"
+                      checked={processDelay.type === '1day'}
+                      onChange={(e) => setProcessDelay({ type: e.target.value as any })}
+                      className="mr-3"
+                    />
+                    <label htmlFor="1day" className="flex items-center">
+                      <span className="font-medium">1 Day Delay</span>
+                      <span className="ml-2 text-sm text-gray-600">24 hours waiting time</span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="radio"
+                      id="2day"
+                      name="processDelay"
+                      value="2day"
+                      checked={processDelay.type === '2day'}
+                      onChange={(e) => setProcessDelay({ type: e.target.value as any })}
+                      className="mr-3"
+                    />
+                    <label htmlFor="2day" className="flex items-center">
+                      <span className="font-medium">2 Day Delay</span>
+                      <span className="ml-2 text-sm text-gray-600">48 hours waiting time</span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center">
+                    <input
+                      type="radio"
+                      id="chain_complete"
+                      name="processDelay"
+                      value="chain_complete"
+                      checked={processDelay.type === 'chain_complete'}
+                      onChange={(e) => setProcessDelay({ type: e.target.value as any })}
+                      className="mr-3"
+                    />
+                    <label htmlFor="chain_complete" className="flex items-center">
+                      <span className="font-medium">Chain Complete</span>
+                      <span className="ml-2 text-sm text-gray-600">Wait for entire batch to complete</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {processDelay.type !== 'immediate' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Description (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={processDelay.description || ''}
+                    onChange={(e) => setProcessDelay({ ...processDelay, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Reason for delay (e.g., cooling time, quality check)"
+                  />
+                </div>
+              )}
+
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <h4 className="font-medium text-blue-900 mb-2">Impact Preview</h4>
+                <div className="text-sm text-blue-700">
+                  {processDelay.type === 'immediate' && (
+                    <p>Next process will start immediately after this one completes.</p>
+                  )}
+                  {processDelay.type === '1day' && (
+                    <p>Next process will start {calculateProcessDelay(processDelay)} hours after this one completes.</p>
+                  )}
+                  {processDelay.type === '2day' && (
+                    <p>Next process will start {calculateProcessDelay(processDelay)} hours after this one completes.</p>
+                  )}
+                  {processDelay.type === 'chain_complete' && (
+                    <p>Next process will wait for all items in the batch to complete this step.</p>
+                  )}
+                  {selectedScheduleItem && (
+                    <div className="mt-2 pt-2 border-t border-blue-200">
+                      <p className="font-medium">Example timing:</p>
+                      <p>Current end: {new Date(selectedScheduleItem.endDate).toLocaleString()}</p>
+                      <p>Next start: {calculateNextProcessStartTime(
+                        new Date(selectedScheduleItem.endDate),
+                        processDelay,
+                        shifts
+                      ).toLocaleString()}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 justify-end mt-6">
+              <button
+                onClick={() => setShowProcessDelayModal(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveProcessDelay}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+              >
+                Save Configuration
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Status Update Modal */}
+      {showStatusModal && selectedItemForStatus && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-96 max-w-md">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Update Status</h3>
+              <button
+                onClick={() => setShowStatusModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2">
+                Current Status: <span className="font-medium">{selectedItemForStatus.status}</span>
+              </p>
+              <p className="text-sm text-gray-600">
+                Item: {products.find(p => p.id === selectedItemForStatus.productId)?.productName} - Step {selectedItemForStatus.processStep}
+              </p>
+            </div>
+
+            <div className="space-y-2 mb-6">
+              <p className="text-sm font-medium text-gray-700 mb-3">Select New Status:</p>
+              {['scheduled', 'in-progress', 'paused', 'completed', 'delayed'].map((status) => (
+                <button
+                  key={status}
+                  onClick={() => updateItemStatus(status as any)}
+                  className={`w-full text-left px-3 py-2 rounded border hover:bg-gray-50 ${
+                    selectedItemForStatus.status === status 
+                      ? 'bg-blue-50 border-blue-200 text-blue-700' 
+                      : 'border-gray-200'
+                  }`}
+                  disabled={selectedItemForStatus.status === status}
+                >
+                  <span className="capitalize">{status.replace('-', ' ')}</span>
+                  {selectedItemForStatus.status === status && (
+                    <span className="text-xs text-blue-600 ml-2">(Current)</span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setShowStatusModal(false)}
+                className="px-4 py-2 text-gray-600 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

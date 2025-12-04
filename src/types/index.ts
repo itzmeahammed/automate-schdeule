@@ -45,6 +45,13 @@ export interface ProcessStep {
   qualityCheckRequired: boolean;
   toolsRequired: string[];
   preferredMachines?: string[]; // NEW: list of preferred machine IDs
+  nextProcessDelay?: ProcessDelay; // NEW: delay before next process can start
+}
+
+export interface ProcessDelay {
+  type: 'immediate' | '1day' | '2day' | 'chain_complete';
+  description?: string;
+  customHours?: number; // For custom delays
 }
 
 export interface Product {
@@ -86,40 +93,85 @@ export interface PurchaseOrder {
   priority: 'urgent' | 'high' | 'medium' | 'low'; // Added priority field
 }
 
+export interface OvertimeRecord {
+  id: string;
+  scheduleItemId: string;
+  shiftId: string;
+  date: string;
+  plannedOvertimeHours: number;
+  actualOvertimeHours?: number;
+  reason: string;
+  approvedBy?: string;
+  status: 'planned' | 'approved' | 'in-progress' | 'completed' | 'cancelled';
+  costMultiplier: number;
+  startTime: string;
+  endTime: string;
+  notes?: string;
+}
+
 export interface ScheduleItem {
   id: string;
   poId: string;
-  machineId: string;
   productId: string;
+  machineId: string;
+  processStep: number;
   startDate: string;
   endDate: string;
-  quantity: number;
-  processStep: number;
-  allocatedTime: number;
-  operatorId?: string;
   status: 'scheduled' | 'in-progress' | 'completed' | 'delayed' | 'paused';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  quantity: number;
+  allocatedTime: number; // in minutes
+  efficiency: number;
+  qualityScore: number; // Quality score for the schedule item
+  progress?: number; // Progress percentage (0-100)
+  notes?: string;
+  dependencies?: string[]; // IDs of other schedule items this depends on
   actualStartTime?: string;
   actualEndTime?: string;
-  // New fields for enhanced action tracking
-  pauseTimes?: { start: string; end?: string }[]; // Array of pause/resume times
-  actionHistory?: { action: 'start' | 'pause' | 'resume' | 'complete'; timestamp: string; user?: string }[];
-  efficiency: number;
-  qualityScore: number;
-  notes: string;
+  pauseTimes?: { start: string; end?: string }[];
+  actionHistory?: { action: string; timestamp: string; user: string }[];
+  overtimeRecords?: OvertimeRecord[];
+  plannedOvertimeHours?: number;
+  actualOvertimeHours?: number;
+  schedulingMode?: 'auto' | 'manual'; // NEW: scheduling update mode
+  manualOverride?: boolean; // NEW: if manually overridden
+  lastAutoUpdate?: string; // NEW: timestamp of last auto update
+}
+
+export interface BreakTime {
+  id: string;
+  name: string;
+  start: string;
+  end: string;
+  duration: number;
+  type: 'short_break' | 'lunch' | 'tea_break' | 'maintenance' | 'custom';
+  isPaid: boolean;
+  isFlexible: boolean;
+  description?: string;
+}
+
+export interface ShiftTiming {
+  startTime: string;
+  endTime: string;
+  coreHoursStart?: string; // Flexible start time range
+  coreHoursEnd?: string;   // Flexible end time range
+  allowFlexibleTiming: boolean;
+  overtimeAllowed: boolean;
+  maxOvertimeHours: number;
 }
 
 export interface Shift {
   id: string;
   shiftName: string;
-  startTime: string;
-  endTime: string;
-  breakTimes: {
-    start: string;
-    end: string;
-    duration: number;
-    type: 'break' | 'lunch' | 'maintenance';
-  }[];
+  timing: ShiftTiming;
+  breakTimes: BreakTime[];
+  workingDays: ('monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday')[];
   isActive: boolean;
+  color: string;
+  description?: string;
+  // Legacy support for existing shift timing format
+  startTime?: string;
+  endTime?: string;
 }
 
 export interface Notification {

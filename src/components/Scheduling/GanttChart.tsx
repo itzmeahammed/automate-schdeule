@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { ScheduleItem } from '../../types';
-import { Calendar, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
+import { Calendar, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Clock } from 'lucide-react';
 
 interface GanttChartProps {
   scheduleItems: ScheduleItem[];
@@ -172,6 +172,17 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
     }
   };
 
+  const hasOvertime = (item: ScheduleItem) => {
+    return item.overtimeRecords && item.overtimeRecords.length > 0;
+  };
+
+  const getTotalOvertimeHours = (item: ScheduleItem) => {
+    if (!item.overtimeRecords) return 0;
+    return item.overtimeRecords.reduce((total, record) => 
+      total + (record.actualOvertimeHours || record.plannedOvertimeHours), 0
+    );
+  };
+
   const navigateDate = (direction: 'prev' | 'next') => {
     const newDate = new Date(currentDate);
     
@@ -340,14 +351,16 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
                     const position = getItemPosition(item);
                     const product = products.find(p => p.id === item.productId);
                     const po = purchaseOrders.find(p => p.id === item.poId);
-                    // Dynamic progress calculation
-                    let start = new Date(item.actualStartTime || item.startDate);
-                    let end = new Date(item.actualEndTime || item.endDate);
-                    let now = new Date();
-                    let progress = 0;
-                    if (now <= start) progress = 0;
-                    else if (now >= end) progress = 100;
-                    else progress = Math.round(((now.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100);
+                    // Use item progress if available, otherwise calculate dynamically
+                    let progress = item.progress !== undefined ? item.progress : 0;
+                    if (progress === 0) {
+                      let start = new Date(item.actualStartTime || item.startDate);
+                      let end = new Date(item.actualEndTime || item.endDate);
+                      let now = new Date();
+                      if (now <= start) progress = 0;
+                      else if (now >= end) progress = 100;
+                      else progress = Math.round(((now.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100);
+                    }
                     
                     // Add visual indicator for segmented tasks
                     const isSegmented = (item as any).isSegment;
@@ -358,27 +371,37 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
                         key={`${item.id}-${index}`}
                         className={`absolute top-1 bottom-1 rounded-lg cursor-pointer transition-all duration-200 hover:shadow-lg hover:z-10 ${
                           getStatusColor(item.status)
-                        } ${isSegmented ? 'border-2 border-white border-opacity-30' : ''}`}
+                        } ${isSegmented ? 'border-2 border-white border-opacity-30' : ''} ${
+                          hasOvertime(item) ? 'ring-2 ring-orange-400 ring-opacity-60' : ''
+                        }`}
                         style={{
                           left: `${position.left}%`,
                           width: `${position.width}%`,
                           minWidth: '60px'
                         }}
                         onClick={() => onItemClick?.(item)}
-                        title={`${product?.productName} - ${po?.poNumber}\nStep ${item.processStep}\nDuration: ${item.allocatedTime} min\nStatus: ${item.status}${isSegmented ? `\nSegment: ${segmentIndex + 1}` : ''}`}
+                        title={`${product?.productName} - ${po?.poNumber}\nStep ${item.processStep}\nDuration: ${item.allocatedTime} min\nStatus: ${item.status}${isSegmented ? `\nSegment: ${segmentIndex + 1}` : ''}${hasOvertime(item) ? `\n🕒 OVERTIME: ${getTotalOvertimeHours(item)} hours planned` : ''}`}
                       >
                         <div className="p-2 text-white text-xs h-full flex flex-col justify-center">
-                          <div className="font-medium truncate">
+                          <div className="font-medium truncate flex items-center">
                             {product?.productName || 'Unknown'}
                             {isSegmented && (
                               <span className="ml-1 text-xs opacity-75">({segmentIndex + 1})</span>
+                            )}
+                            {hasOvertime(item) && (
+                              <Clock size={10} className="ml-1 text-orange-300" />
                             )}
                           </div>
                           <div className="text-xs opacity-90 truncate">
                             Step {item.processStep} • {item.quantity} pcs
                           </div>
-                          <div className="text-xs opacity-75">
-                            {item.allocatedTime}min
+                          <div className="text-xs opacity-75 flex items-center gap-1">
+                            <span>{item.allocatedTime}min</span>
+                            {hasOvertime(item) && (
+                              <span className="bg-orange-500 text-white px-1 rounded text-xs font-semibold">
+                                +{getTotalOvertimeHours(item)}h OVERTIME
+                              </span>
+                            )}
                           </div>
                         </div>
                         {/* Progress Bar */}
@@ -442,6 +465,17 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
                 <div className="flex items-center space-x-1">
                   <div className="w-3 h-3 bg-gray-600 rounded"></div>
                   <span className="text-xs text-gray-600">Scheduled</span>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              <span className="text-sm font-medium text-gray-700">Overtime:</span>
+              <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-1">
+                  <div className="w-3 h-3 bg-blue-500 rounded ring-2 ring-orange-400 ring-opacity-60"></div>
+                  <Clock size={12} className="text-orange-500" />
+                  <span className="text-xs text-gray-600">Has Overtime</span>
                 </div>
               </div>
             </div>

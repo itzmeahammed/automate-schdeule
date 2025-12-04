@@ -424,36 +424,63 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
           shiftName: '1st Shift',
           startTime: '08:00',
           endTime: '16:00',
+          timing: {
+            startTime: '08:00',
+            endTime: '16:00',
+            allowFlexibleTiming: false,
+            overtimeAllowed: true,
+            maxOvertimeHours: 4
+          },
           breakTimes: [
-            { start: '10:00', end: '10:15', duration: 15, type: 'break' },
-            { start: '12:00', end: '13:00', duration: 60, type: 'lunch' },
-            { start: '14:30', end: '14:45', duration: 15, type: 'break' }
+            { id: '1-1', name: 'Morning Break', start: '10:00', end: '10:15', duration: 15, type: 'short_break', isPaid: true, isFlexible: false },
+            { id: '1-2', name: 'Lunch Break', start: '12:00', end: '13:00', duration: 60, type: 'lunch', isPaid: true, isFlexible: false },
+            { id: '1-3', name: 'Afternoon Break', start: '14:30', end: '14:45', duration: 15, type: 'short_break', isPaid: true, isFlexible: false }
           ],
-          isActive: true
+          workingDays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+          isActive: true,
+          color: '#3B82F6'
         },
         {
           id: '2',
           shiftName: '2nd Shift',
           startTime: '16:00',
           endTime: '00:00',
+          timing: {
+            startTime: '16:00',
+            endTime: '00:00',
+            allowFlexibleTiming: false,
+            overtimeAllowed: true,
+            maxOvertimeHours: 4
+          },
           breakTimes: [
-            { start: '18:00', end: '18:15', duration: 15, type: 'break' },
-            { start: '20:00', end: '21:00', duration: 60, type: 'lunch' },
-            { start: '22:30', end: '22:45', duration: 15, type: 'break' }
+            { id: '2-1', name: 'Evening Break', start: '18:00', end: '18:15', duration: 15, type: 'short_break', isPaid: true, isFlexible: false },
+            { id: '2-2', name: 'Dinner Break', start: '20:00', end: '21:00', duration: 60, type: 'lunch', isPaid: true, isFlexible: false },
+            { id: '2-3', name: 'Night Break', start: '22:30', end: '22:45', duration: 15, type: 'short_break', isPaid: true, isFlexible: false }
           ],
-          isActive: true
+          workingDays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
+          isActive: true,
+          color: '#F59E0B'
         },
         {
           id: '3',
           shiftName: '3rd Shift',
           startTime: '00:00',
           endTime: '08:00',
+          timing: {
+            startTime: '00:00',
+            endTime: '08:00',
+            allowFlexibleTiming: false,
+            overtimeAllowed: true,
+            maxOvertimeHours: 4
+          },
           breakTimes: [
-            { start: '02:00', end: '02:15', duration: 15, type: 'break' },
-            { start: '04:00', end: '05:00', duration: 60, type: 'lunch' },
-            { start: '06:30', end: '06:45', duration: 15, type: 'break' }
+            { id: '3-1', name: 'Midnight Break', start: '02:00', end: '02:15', duration: 15, type: 'short_break', isPaid: true, isFlexible: false },
+            { id: '3-2', name: 'Late Night Meal', start: '04:00', end: '05:00', duration: 60, type: 'lunch', isPaid: true, isFlexible: false },
+            { id: '3-3', name: 'Early Morning Break', start: '06:30', end: '06:45', duration: 15, type: 'short_break', isPaid: true, isFlexible: false }
           ],
-          isActive: false
+          workingDays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+          isActive: false,
+          color: '#EF4444'
         }
       ];
       const sampleNotifications: Notification[] = [
