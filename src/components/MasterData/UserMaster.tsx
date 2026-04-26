@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { Save } from 'lucide-react';
+import { Save, CheckCircle } from 'lucide-react';
 
 // DemoUser type matches the context
 interface DemoUser {
@@ -20,10 +20,35 @@ const UserMaster: React.FC = () => {
     password: user?.password || '',
     role: user?.role || 'admin',
   });
+  const [successMsg, setSuccessMsg] = useState('');
+
+  // Keep form in sync if user changes in context (e.g. updated elsewhere)
+  useEffect(() => {
+    if (user) {
+      setFormData({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        password: user.password,
+        role: user.role,
+      });
+    }
+  }, [user]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!formData.name.trim()) {
+      alert('Name is required.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(formData.email)) {
+      alert('Please enter a valid email address.');
+      return;
+    }
     setUser(formData);
+    setSuccessMsg('Profile saved successfully!');
+    setTimeout(() => setSuccessMsg(''), 3000);
   };
 
   return (
@@ -89,6 +114,12 @@ const UserMaster: React.FC = () => {
           <Save size={16} />
           Save User Data
         </button>
+        {successMsg && (
+          <div className="flex items-center gap-2 mt-4 px-4 py-2 bg-green-50 border border-green-200 rounded-md text-green-700 text-sm">
+            <CheckCircle size={16} />
+            {successMsg}
+          </div>
+        )}
       </form>
     </div>
   );

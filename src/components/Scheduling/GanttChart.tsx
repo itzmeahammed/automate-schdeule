@@ -9,8 +9,7 @@ interface GanttChartProps {
 }
 
 const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) => {
-  const { machines, products, purchaseOrders } = useApp();
-  const { holidays } = useApp();
+  const { machines, products, purchaseOrders, shifts, holidays } = useApp();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<'day' | 'week' | 'month'>('week');
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -88,8 +87,17 @@ const GanttChart: React.FC<GanttChartProps> = ({ scheduleItems, onItemClick }) =
     const machine = machines.find(m => m.id === item.machineId);
     if (!machine) return [item];
 
-    const { start: shiftStart, end: shiftEnd } = parseShiftTiming(machine.shiftTiming);
-    const workingHoursPerDay = getWorkingHoursFromShift(machine.shiftTiming);
+    // Prefer structured shift data from context; fall back to legacy shiftTiming string
+    const activeShift = shifts.find(s =>
+      s.shiftName === machine.shiftTiming ||
+      `${s.timing.startTime}-${s.timing.endTime}` === machine.shiftTiming ||
+      machine.shiftTiming?.includes(s.timing.startTime)
+    );
+    const shiftStart = activeShift ? activeShift.timing.startTime : parseShiftTiming(machine.shiftTiming).start;
+    const shiftEnd   = activeShift ? activeShift.timing.endTime   : parseShiftTiming(machine.shiftTiming).end;
+    const workingHoursPerDay = activeShift
+      ? getWorkingHoursFromShift(`${activeShift.timing.startTime}-${activeShift.timing.endTime}`)
+      : getWorkingHoursFromShift(machine.shiftTiming);
     const workingMinutesPerDay = workingHoursPerDay * 60;
     
     const itemStart = new Date(item.startDate);

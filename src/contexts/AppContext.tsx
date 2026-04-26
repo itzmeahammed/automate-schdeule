@@ -1,11 +1,23 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
 import { User, Machine, Product, PurchaseOrder, ScheduleItem, Shift, Notification, Alert } from '../types';
 import { getAutoPOStatus } from '../utils/scheduling';
+import { authService } from '../services/auth';
+import {
+  machineService,
+  productService,
+  purchaseOrderService,
+  scheduleItemService,
+  shiftService,
+  notificationService,
+  alertService,
+  holidayService
+} from '../services/mongoDatabase';
+import { isMongoConfigured } from '../lib/mongodb';
 
 interface AppContextType {
-  signUp: (user: Omit<DemoUser, 'id'>) => { success: boolean; message: string };
-  signIn: (email: string, password: string) => { success: boolean; message: string; user?: DemoUser };
-  signOut: () => void;
+  signUp: (user: Omit<DemoUser, 'id'>) => Promise<{ success: boolean; message: string }>;
+  signIn: (email: string, password: string) => Promise<{ success: boolean; message: string; user?: DemoUser }>;
+  signOut: () => Promise<void>;
   user: DemoUser | null; // <-- Add this line
   setUser: React.Dispatch<React.SetStateAction<DemoUser | null>>; // <-- Add this
   users: DemoUser[];     // <-- Add this line
@@ -52,7 +64,9 @@ interface AppContextType {
   deleteProduct: (id: string) => void;
   deletePurchaseOrder: (id: string) => void;
   deleteShift: (id: string) => void;
-  
+  deleteNotification: (id: string) => void;
+  deleteAlert: (id: string) => void;
+
   // Utility functions
   markNotificationAsRead: (id: string) => void;
   resolveAlert: (id: string) => void;
@@ -95,6 +109,9 @@ type DemoUser = {
   profileImage?: string;
 };
 
+// Flag to determine if using MongoDB or localStorage fallback
+const useMongoDB = isMongoConfigured();
+
 export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
   // --- Auth State ---
   const [user, setUser] = useState<DemoUser | null>(null);
@@ -123,8 +140,8 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
         oscillator.start(context.currentTime);
         oscillator.stop(context.currentTime + 0.1);
       });
-    } catch (error) {
-      console.log('Notification sound not supported');
+    } catch {
+      // Sound not supported in this environment
     }
   };
   const [authToken, setAuthToken] = useState<string | null>(null);
@@ -167,36 +184,71 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
   }, [authToken]);
 
   // Sign up method
-  const signUp = (newUser: Omit<DemoUser, 'id'>) => {
-    if (users.some(u => u.email === newUser.email)) {
-      return { success: false, message: 'Email already registered.' };
+  const signUp = async (newUser: Omit<DemoUser, 'id'>) => {
+    if (useMongoDB) {
+      // Use Supabase authentication
+      const result = await authService.signUp({
+        email: newUser.email,
+        password: newUser.password,
+        name: newUser.name,
+        role: newUser.role
+      });
+      return result;
+    } else {
+      // Use localStorage for offline mode
+      if (users.some(u => u.email === newUser.email)) {
+        return { success: false, message: 'Email already registered.' };
+      }
+      const userObj: DemoUser = {
+        ...newUser,
+        id: crypto.randomUUID(),
+      };
+      setUsers([...users, userObj]);
+      return { success: true, message: 'Account created! You can now sign in.' };
     }
-    const userObj: DemoUser = {
-      ...newUser,
-      id: crypto.randomUUID(),
-    };
-    setUsers([...users, userObj]);
-    return { success: true, message: 'Account created! You can now sign in.' };
   };
 
   // Update signIn to generate token
-  const signIn = (email: string, password: string) => {
-    const found = users.find(
-      (u: any) =>
-        u.email.trim().toLowerCase() === email.trim().toLowerCase() &&
-        u.password === password
-    );
-    if (!found) {
-      return { success: false, message: 'Invalid email or password.' };
+  const signIn = async (email: string, password: string): Promise<{ success: boolean; message: string; user?: DemoUser }> => {
+    if (useMongoDB) {
+      // Use Supabase authentication
+      const result = await authService.signIn({ email, password });
+      if (result.success && result.user && result.token) {
+        const demoUser: DemoUser = {
+          id: result.user.id,
+          name: result.user.name,
+          email: result.user.email,
+          password: '', // Don't store password
+          role: result.user.role,
+          profileImage: result.user.profileImage
+        };
+        setUser(demoUser);
+        setAuthToken(result.token);
+        return { success: true, message: result.message, user: demoUser };
+      }
+      return { success: result.success, message: result.message };
+    } else {
+      // Use localStorage for offline mode
+      const found = users.find(
+        (u: any) =>
+          u.email.trim().toLowerCase() === email.trim().toLowerCase() &&
+          u.password === password
+      );
+      if (!found) {
+        return { success: false, message: 'Invalid email or password.' };
+      }
+      setUser(found);
+      const token = crypto.randomUUID();
+      setAuthToken(token);
+      return { success: true, message: 'Signed in!', user: found };
     }
-    setUser(found);
-    const token = crypto.randomUUID();
-    setAuthToken(token);
-    return { success: true, message: 'Signed in!', user: found, token };
   };
 
   // Update signOut to clear token
-  const signOut = () => {
+  const signOut = async () => {
+    if (useMongoDB) {
+      await authService.signOut();
+    }
     setUser(null);
     setAuthToken(null);
   };
@@ -556,40 +608,80 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
 
   useEffect(() => {
     const initializeData = async () => {
-      let savedUser, savedMachines, savedProducts, savedPOs, savedSchedule, savedShifts, savedNotifications, savedAlerts, savedTheme, savedHolidays;
-      if (window.electronAPI) {
-        savedUser = await window.electronAPI.getItem('manufacturing-user');
-        savedMachines = await window.electronAPI.getItem('manufacturing-machines');
-        savedProducts = await window.electronAPI.getItem('manufacturing-products');
-        savedPOs = await window.electronAPI.getItem('manufacturing-purchase-orders');
-        savedSchedule = await window.electronAPI.getItem('manufacturing-schedule');
-        savedShifts = await window.electronAPI.getItem('manufacturing-shifts');
-        savedNotifications = await window.electronAPI.getItem('manufacturing-notifications');
-        savedAlerts = await window.electronAPI.getItem('manufacturing-alerts');
-        savedTheme = await window.electronAPI.getItem('manufacturing-theme');
-        savedHolidays = await window.electronAPI.getItem('manufacturing-holidays');
+      if (useMongoDB) {
+        // Load data from MongoDB Atlas
+        try {
+          const [machinesData, productsData, posData, scheduleData, shiftsData, notificationsData, alertsData, holidaysData] = await Promise.all([
+            machineService.getAll(),
+            productService.getAll(),
+            purchaseOrderService.getAll(),
+            scheduleItemService.getAll(),
+            shiftService.getAll(),
+            notificationService.getAll(),
+            alertService.getAll(),
+            holidayService.getAll(),
+          ]);
+
+          setMachines(machinesData.length > 0 ? machinesData : sampleMachines);
+          setProducts(productsData.length > 0 ? productsData : sampleProducts);
+          setPurchaseOrders(posData.length > 0 ? posData : samplePOs);
+          setScheduleItems(scheduleData);
+          setShifts(shiftsData.length > 0 ? shiftsData : sampleShifts);
+          setNotifications(notificationsData.length > 0 ? notificationsData : sampleNotifications);
+          setAlerts(alertsData.length > 0 ? alertsData : sampleAlerts);
+          setHolidays(Array.from(new Set([...holidaysData, ...getAllSundays(new Date().getFullYear())])));
+
+          // Load theme from localStorage
+          const savedTheme = localStorage.getItem('manufacturing-theme');
+          setTheme(savedTheme ? JSON.parse(savedTheme) : 'light');
+        } catch (error) {
+          console.error('Error loading data from MongoDB:', error);
+          // Fallback to sample data
+          setMachines(sampleMachines);
+          setProducts(sampleProducts);
+          setPurchaseOrders(samplePOs);
+          setShifts(sampleShifts);
+          setNotifications(sampleNotifications);
+          setAlerts(sampleAlerts);
+          setHolidays(getAllSundays(new Date().getFullYear()));
+        }
       } else {
-        savedUser = localStorage.getItem('manufacturing-user');
-        savedMachines = localStorage.getItem('manufacturing-machines');
-        savedProducts = localStorage.getItem('manufacturing-products');
-        savedPOs = localStorage.getItem('manufacturing-purchase-orders');
-        savedSchedule = localStorage.getItem('manufacturing-schedule');
-        savedShifts = localStorage.getItem('manufacturing-shifts');
-        savedNotifications = localStorage.getItem('manufacturing-notifications');
-        savedAlerts = localStorage.getItem('manufacturing-alerts');
-        savedTheme = localStorage.getItem('manufacturing-theme');
-        savedHolidays = localStorage.getItem('manufacturing-holidays');
+        // Load from localStorage or Electron API
+        let savedUser, savedMachines, savedProducts, savedPOs, savedSchedule, savedShifts, savedNotifications, savedAlerts, savedTheme, savedHolidays;
+        if (window.electronAPI) {
+          savedUser = await window.electronAPI.getItem('manufacturing-user');
+          savedMachines = await window.electronAPI.getItem('manufacturing-machines');
+          savedProducts = await window.electronAPI.getItem('manufacturing-products');
+          savedPOs = await window.electronAPI.getItem('manufacturing-purchase-orders');
+          savedSchedule = await window.electronAPI.getItem('manufacturing-schedule');
+          savedShifts = await window.electronAPI.getItem('manufacturing-shifts');
+          savedNotifications = await window.electronAPI.getItem('manufacturing-notifications');
+          savedAlerts = await window.electronAPI.getItem('manufacturing-alerts');
+          savedTheme = await window.electronAPI.getItem('manufacturing-theme');
+          savedHolidays = await window.electronAPI.getItem('manufacturing-holidays');
+        } else {
+          savedUser = localStorage.getItem('manufacturing-user');
+          savedMachines = localStorage.getItem('manufacturing-machines');
+          savedProducts = localStorage.getItem('manufacturing-products');
+          savedPOs = localStorage.getItem('manufacturing-purchase-orders');
+          savedSchedule = localStorage.getItem('manufacturing-schedule');
+          savedShifts = localStorage.getItem('manufacturing-shifts');
+          savedNotifications = localStorage.getItem('manufacturing-notifications');
+          savedAlerts = localStorage.getItem('manufacturing-alerts');
+          savedTheme = localStorage.getItem('manufacturing-theme');
+          savedHolidays = localStorage.getItem('manufacturing-holidays');
+        }
+        setUser(savedUser ? JSON.parse(savedUser) : sampleUser);
+        setMachines(savedMachines ? JSON.parse(savedMachines) : sampleMachines);
+        setProducts(savedProducts ? JSON.parse(savedProducts) : sampleProducts);
+        setPurchaseOrders(savedPOs ? JSON.parse(savedPOs) : samplePOs);
+        setScheduleItems(savedSchedule ? JSON.parse(savedSchedule) : []);
+        setShifts(savedShifts ? JSON.parse(savedShifts) : sampleShifts);
+        setNotifications(savedNotifications ? JSON.parse(savedNotifications) : sampleNotifications);
+        setAlerts(savedAlerts ? JSON.parse(savedAlerts) : sampleAlerts);
+        setTheme(savedTheme ? JSON.parse(savedTheme) : 'light');
+        setHolidays(savedHolidays ? Array.from(new Set([...JSON.parse(savedHolidays), ...getAllSundays(new Date().getFullYear())])) : getAllSundays(new Date().getFullYear()));
       }
-      setUser(savedUser ? JSON.parse(savedUser) : sampleUser);
-      setMachines(savedMachines ? JSON.parse(savedMachines) : sampleMachines);
-      setProducts(savedProducts ? JSON.parse(savedProducts) : sampleProducts);
-      setPurchaseOrders(savedPOs ? JSON.parse(savedPOs) : samplePOs);
-      setScheduleItems(savedSchedule ? JSON.parse(savedSchedule) : []);
-      setShifts(savedShifts ? JSON.parse(savedShifts) : sampleShifts);
-      setNotifications(savedNotifications ? JSON.parse(savedNotifications) : sampleNotifications);
-      setAlerts(savedAlerts ? JSON.parse(savedAlerts) : sampleAlerts);
-      setTheme(savedTheme ? JSON.parse(savedTheme) : 'light');
-      setHolidays(savedHolidays ? Array.from(new Set([...JSON.parse(savedHolidays), ...getAllSundays(new Date().getFullYear())])) : getAllSundays(new Date().getFullYear()));
       setLoading(false);
       didInit.current = true;
     };
@@ -597,26 +689,22 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     initializeData();
   }, []);
 
+  // Update PO statuses when schedule changes — only depends on scheduleItems to avoid infinite loop
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    purchaseOrders.forEach(po => {
-      const dynamicStatus = getAutoPOStatus(po, scheduleItems);
-      if (po.status !== dynamicStatus) {
-        setPurchaseOrders(prev => prev.map(p =>
-          p.id === po.id ? { ...p, status: dynamicStatus } : p
-        ));
-        // Notifications for PO status changes
-        if (dynamicStatus === 'completed') {
-          addSystemNotification('success', 'PO Completed', `PO #${po.poNumber} has been completed.`);
-        } else if (dynamicStatus === 'delayed') {
-          addSystemNotification('warning', 'PO Delayed', `PO #${po.poNumber} is delayed.`);
-        } else if (dynamicStatus === 'in-progress') {
-          addSystemNotification('info', 'PO In Progress', `PO #${po.poNumber} is now in progress.`);
-        } else if (dynamicStatus === 'pending') {
-          addSystemNotification('info', 'PO Pending', `PO #${po.poNumber} is pending.`);
+    setPurchaseOrders(prev => {
+      let changed = false;
+      const next = prev.map(po => {
+        const dynamicStatus = getAutoPOStatus(po, scheduleItems);
+        if (po.status !== dynamicStatus) {
+          changed = true;
+          return { ...po, status: dynamicStatus };
         }
-      }
+        return po;
+      });
+      return changed ? next : prev;
     });
-  }, [purchaseOrders, scheduleItems]);
+  }, [scheduleItems]);
 
   // Watch for force-complete (manual completion of delayed PO)
   useEffect(() => {
@@ -656,7 +744,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
       if (user) {
         if (window.electronAPI) {
           window.electronAPI.setItem('manufacturing-user', JSON.stringify(user));
-          console.log('[ElectronStorage] Saved user');
         } else {
           localStorage.setItem('manufacturing-user', JSON.stringify(user));
         }
@@ -668,7 +755,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-machines', JSON.stringify(machines));
-        console.log('[ElectronStorage] Saved machines');
       } else {
     localStorage.setItem('manufacturing-machines', JSON.stringify(machines));
       }
@@ -679,7 +765,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-products', JSON.stringify(products));
-        console.log('[ElectronStorage] Saved products');
       } else {
     localStorage.setItem('manufacturing-products', JSON.stringify(products));
       }
@@ -690,7 +775,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-purchase-orders', JSON.stringify(purchaseOrders));
-        console.log('[ElectronStorage] Saved purchase orders');
       } else {
     localStorage.setItem('manufacturing-purchase-orders', JSON.stringify(purchaseOrders));
       }
@@ -701,7 +785,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-schedule', JSON.stringify(scheduleItems));
-        console.log('[ElectronStorage] Saved schedule');
       } else {
     localStorage.setItem('manufacturing-schedule', JSON.stringify(scheduleItems));
       }
@@ -712,7 +795,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-shifts', JSON.stringify(shifts));
-        console.log('[ElectronStorage] Saved shifts');
       } else {
     localStorage.setItem('manufacturing-shifts', JSON.stringify(shifts));
       }
@@ -723,7 +805,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-notifications', JSON.stringify(notifications));
-        console.log('[ElectronStorage] Saved notifications');
       } else {
     localStorage.setItem('manufacturing-notifications', JSON.stringify(notifications));
       }
@@ -734,7 +815,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-alerts', JSON.stringify(alerts));
-        console.log('[ElectronStorage] Saved alerts');
       } else {
     localStorage.setItem('manufacturing-alerts', JSON.stringify(alerts));
       }
@@ -745,7 +825,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     if (!loading && didInit.current) {
       if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-theme', JSON.stringify(theme));
-        console.log('[ElectronStorage] Saved theme');
       } else {
     localStorage.setItem('manufacturing-theme', JSON.stringify(theme));
       }
@@ -754,7 +833,9 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
 
   useEffect(() => {
     if (!loading && didInit.current) {
-      if (window.electronAPI) {
+      if (useMongoDB) {
+        holidayService.saveAll(holidays).catch(console.error);
+      } else if (window.electronAPI) {
         window.electronAPI.setItem('manufacturing-holidays', JSON.stringify(holidays));
       } else {
         localStorage.setItem('manufacturing-holidays', JSON.stringify(holidays));
@@ -763,90 +844,299 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
   }, [holidays, loading]);
 
   if (loading) {
-    return <div>Loading...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
+        <div className="text-center">
+          <div className="relative mx-auto mb-6 h-20 w-20">
+            <div className="absolute inset-0 rounded-full border-4 border-blue-100"></div>
+            <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-t-blue-600"></div>
+            <div className="absolute inset-3 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+              <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+              </svg>
+            </div>
+          </div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-1">ManufacturingPro</h2>
+          <p className="text-gray-500 text-sm">Loading your workspace...</p>
+          <div className="mt-4 flex justify-center gap-1">
+            <div className="h-2 w-2 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0ms' }}></div>
+            <div className="h-2 w-2 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
+            <div className="h-2 w-2 rounded-full bg-blue-600 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // CRUD operations
-  const addMachine = (machine: Machine) => {
-    setMachines(prev => [...prev, machine]);
+  const addMachine = async (machine: Machine) => {
+    if (useMongoDB) {
+      try {
+        const created = await machineService.create(machine);
+        setMachines(prev => [...prev, created]);
+      } catch (error) {
+        console.error('Error adding machine:', error);
+        addSystemNotification('error', 'Error', 'Failed to add machine');
+      }
+    } else {
+      setMachines(prev => [...prev, machine]);
+    }
   };
 
-  const addProduct = (product: Product) => {
-    setProducts(prev => [...prev, product]);
+  const addProduct = async (product: Product) => {
+    if (useMongoDB) {
+      try {
+        const created = await productService.create(product);
+        setProducts(prev => [...prev, created]);
+      } catch (error) {
+        console.error('Error adding product:', error);
+        addSystemNotification('error', 'Error', 'Failed to add product');
+      }
+    } else {
+      setProducts(prev => [...prev, product]);
+    }
   };
 
-  const addPurchaseOrder = (po: PurchaseOrder) => {
-    setPurchaseOrders(prev => [...prev, po]);
+  const addPurchaseOrder = async (po: PurchaseOrder) => {
+    if (useMongoDB) {
+      try {
+        const created = await purchaseOrderService.create(po);
+        setPurchaseOrders(prev => [...prev, created]);
+      } catch (error) {
+        console.error('Error adding purchase order:', error);
+        addSystemNotification('error', 'Error', 'Failed to add purchase order');
+      }
+    } else {
+      setPurchaseOrders(prev => [...prev, po]);
+    }
   };
 
-  const addShift = (shift: Shift) => {
-    setShifts(prev => [...prev, shift]);
+  const addShift = async (shift: Shift) => {
+    if (useMongoDB) {
+      try {
+        const created = await shiftService.create(shift);
+        setShifts(prev => [...prev, created]);
+      } catch (error) {
+        console.error('Error adding shift:', error);
+        addSystemNotification('error', 'Error', 'Failed to add shift');
+      }
+    } else {
+      setShifts(prev => [...prev, shift]);
+    }
   };
 
-  const addNotification = (notification: Notification) => {
-    setNotifications(prev => [notification, ...prev]);
+  const addNotification = async (notification: Notification) => {
+    if (useMongoDB) {
+      try {
+        const created = await notificationService.create(notification);
+        setNotifications(prev => [created, ...prev]);
+      } catch (error) {
+        console.error('Error adding notification:', error);
+      }
+    } else {
+      setNotifications(prev => [notification, ...prev]);
+    }
   };
 
-  const addAlert = (alert: Alert) => {
-    setAlerts(prev => [alert, ...prev]);
+  const addAlert = async (alert: Alert) => {
+    if (useMongoDB) {
+      try {
+        const created = await alertService.create(alert);
+        setAlerts(prev => [created, ...prev]);
+      } catch (error) {
+        console.error('Error adding alert:', error);
+      }
+    } else {
+      setAlerts(prev => [alert, ...prev]);
+    }
   };
 
-  const updateMachine = (id: string, updates: Partial<Machine>) => {
-    setMachines(prev => prev.map(machine => 
-      machine.id === id ? { ...machine, ...updates } : machine
-    ));
+  const updateMachine = async (id: string, updates: Partial<Machine>) => {
+    if (useMongoDB) {
+      try {
+        const updated = await machineService.update(id, updates);
+        setMachines(prev => prev.map(machine => 
+          machine.id === id ? updated : machine
+        ));
+      } catch (error) {
+        console.error('Error updating machine:', error);
+        addSystemNotification('error', 'Error', 'Failed to update machine');
+      }
+    } else {
+      setMachines(prev => prev.map(machine => 
+        machine.id === id ? { ...machine, ...updates } : machine
+      ));
+    }
   };
 
-  const updateProduct = (id: string, updates: Partial<Product>) => {
-    setProducts(prev => prev.map(product => 
-      product.id === id ? { ...product, ...updates } : product
-    ));
+  const updateProduct = async (id: string, updates: Partial<Product>) => {
+    if (useMongoDB) {
+      try {
+        const updated = await productService.update(id, updates);
+        setProducts(prev => prev.map(product => 
+          product.id === id ? updated : product
+        ));
+      } catch (error) {
+        console.error('Error updating product:', error);
+        addSystemNotification('error', 'Error', 'Failed to update product');
+      }
+    } else {
+      setProducts(prev => prev.map(product => 
+        product.id === id ? { ...product, ...updates } : product
+      ));
+    }
   };
 
-  const updatePurchaseOrder = (id: string, updates: Partial<PurchaseOrder>) => {
-    setPurchaseOrders(prev => prev.map(po => 
-      po.id === id ? { ...po, ...updates } : po
-    ));
+  const updatePurchaseOrder = async (id: string, updates: Partial<PurchaseOrder>) => {
+    if (useMongoDB) {
+      try {
+        const updated = await purchaseOrderService.update(id, updates);
+        setPurchaseOrders(prev => prev.map(po => 
+          po.id === id ? updated : po
+        ));
+      } catch (error) {
+        console.error('Error updating purchase order:', error);
+        addSystemNotification('error', 'Error', 'Failed to update purchase order');
+      }
+    } else {
+      setPurchaseOrders(prev => prev.map(po => 
+        po.id === id ? { ...po, ...updates } : po
+      ));
+    }
   };
 
-  const updateScheduleItem = (id: string, updates: Partial<ScheduleItem>) => {
-    setScheduleItems(prev => prev.map(item => 
-      item.id === id ? { ...item, ...updates } : item
-    ));
+  const updateScheduleItem = async (id: string, updates: Partial<ScheduleItem>) => {
+    if (useMongoDB) {
+      try {
+        const updated = await scheduleItemService.update(id, updates);
+        setScheduleItems(prev => prev.map(item => 
+          item.id === id ? updated : item
+        ));
+      } catch (error) {
+        console.error('Error updating schedule item:', error);
+        addSystemNotification('error', 'Error', 'Failed to update schedule item');
+      }
+    } else {
+      setScheduleItems(prev => prev.map(item => 
+        item.id === id ? { ...item, ...updates } : item
+      ));
+    }
   };
 
-  const updateShift = (id: string, updates: Partial<Shift>) => {
-    setShifts(prev => prev.map(shift => 
-      shift.id === id ? { ...shift, ...updates } : shift
-    ));
+  const updateShift = async (id: string, updates: Partial<Shift>) => {
+    if (useMongoDB) {
+      try {
+        const updated = await shiftService.update(id, updates);
+        setShifts(prev => prev.map(shift => 
+          shift.id === id ? updated : shift
+        ));
+      } catch (error) {
+        console.error('Error updating shift:', error);
+        addSystemNotification('error', 'Error', 'Failed to update shift');
+      }
+    } else {
+      setShifts(prev => prev.map(shift => 
+        shift.id === id ? { ...shift, ...updates } : shift
+      ));
+    }
   };
 
-  const deleteMachine = (id: string) => {
-    setMachines(prev => prev.filter(machine => machine.id !== id));
+  const deleteMachine = async (id: string) => {
+    if (useMongoDB) {
+      try {
+        await machineService.delete(id);
+        setMachines(prev => prev.filter(machine => machine.id !== id));
+      } catch (error) {
+        console.error('Error deleting machine:', error);
+        addSystemNotification('error', 'Error', 'Failed to delete machine');
+      }
+    } else {
+      setMachines(prev => prev.filter(machine => machine.id !== id));
+    }
   };
 
-  const deleteProduct = (id: string) => {
-    setProducts(prev => prev.filter(product => product.id !== id));
+  const deleteProduct = async (id: string) => {
+    if (useMongoDB) {
+      try {
+        await productService.delete(id);
+        setProducts(prev => prev.filter(product => product.id !== id));
+      } catch (error) {
+        console.error('Error deleting product:', error);
+        addSystemNotification('error', 'Error', 'Failed to delete product');
+      }
+    } else {
+      setProducts(prev => prev.filter(product => product.id !== id));
+    }
   };
 
-  const deletePurchaseOrder = (id: string) => {
-    setPurchaseOrders(prev => prev.filter(po => po.id !== id));
+  const deletePurchaseOrder = async (id: string) => {
+    if (useMongoDB) {
+      try {
+        await purchaseOrderService.delete(id);
+        setPurchaseOrders(prev => prev.filter(po => po.id !== id));
+      } catch (error) {
+        console.error('Error deleting purchase order:', error);
+        addSystemNotification('error', 'Error', 'Failed to delete purchase order');
+      }
+    } else {
+      setPurchaseOrders(prev => prev.filter(po => po.id !== id));
+    }
   };
 
-  const deleteShift = (id: string) => {
-    setShifts(prev => prev.filter(shift => shift.id !== id));
+  const deleteShift = async (id: string) => {
+    if (useMongoDB) {
+      try {
+        await shiftService.delete(id);
+        setShifts(prev => prev.filter(shift => shift.id !== id));
+      } catch (error) {
+        console.error('Error deleting shift:', error);
+        addSystemNotification('error', 'Error', 'Failed to delete shift');
+      }
+    } else {
+      setShifts(prev => prev.filter(shift => shift.id !== id));
+    }
   };
 
-  const markNotificationAsRead = (id: string) => {
-    setNotifications(prev => prev.map(notification =>
-      notification.id === id ? { ...notification, isRead: true } : notification
-    ));
+  const deleteNotification = (id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
   };
 
-  const resolveAlert = (id: string) => {
-    setAlerts(prev => prev.map(alert =>
-      alert.id === id ? { ...alert, isResolved: true } : alert
-    ));
+  const deleteAlert = (id: string) => {
+    setAlerts(prev => prev.filter(a => a.id !== id));
+  };
+
+  const markNotificationAsRead = async (id: string) => {
+    if (useMongoDB) {
+      try {
+        await notificationService.markAsRead(id);
+        setNotifications(prev => prev.map(notification =>
+          notification.id === id ? { ...notification, isRead: true } : notification
+        ));
+      } catch (error) {
+        console.error('Error marking notification as read:', error);
+      }
+    } else {
+      setNotifications(prev => prev.map(notification =>
+        notification.id === id ? { ...notification, isRead: true } : notification
+      ));
+    }
+  };
+
+  const resolveAlert = async (id: string) => {
+    if (useMongoDB) {
+      try {
+        await alertService.resolve(id);
+        setAlerts(prev => prev.map(alert =>
+          alert.id === id ? { ...alert, isResolved: true } : alert
+        ));
+      } catch (error) {
+        console.error('Error resolving alert:', error);
+      }
+    } else {
+      setAlerts(prev => prev.map(alert =>
+        alert.id === id ? { ...alert, isResolved: true } : alert
+      ));
+    }
   };
 
   const getUnreadNotificationsCount = () => {
@@ -897,6 +1187,8 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     deleteProduct,
     deletePurchaseOrder,
     deleteShift,
+    deleteNotification,
+    deleteAlert,
     markNotificationAsRead,
     resolveAlert,
     getUnreadNotificationsCount,

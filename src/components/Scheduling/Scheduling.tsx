@@ -34,15 +34,16 @@ function formatDMYHM(dateStr: string) {
 }
 
 const Scheduling: React.FC = () => {
-  const { 
-    purchaseOrders, 
-    products, 
-    machines, 
-    user, 
-    scheduleItems, 
+  const {
+    purchaseOrders,
+    products,
+    machines,
+    user,
+    scheduleItems,
     setScheduleItems,
     shifts,
-    updatePurchaseOrder, // <-- add this
+    updatePurchaseOrder,
+    updateProduct,
     holidays
   } = useApp();
   
@@ -81,6 +82,15 @@ const Scheduling: React.FC = () => {
   useEffect(() => {
     if (selectedItem) setNotes(selectedItem.notes || "");
   }, [selectedItem]);
+
+  // Detect delayed items and show popup — must be in useEffect, not during render
+  useEffect(() => {
+    if (showDelayedPopup.open) return;
+    const firstDelayed = filteredSchedule.find(item => getAutoStatus(item) === 'delayed');
+    if (firstDelayed && firstDelayed.poId !== showDelayedPopup.poId) {
+      setShowDelayedPopup({ poId: firstDelayed.poId, open: true });
+    }
+  }, [filteredSchedule]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-hide toast after 3 seconds
   useEffect(() => {
@@ -630,21 +640,22 @@ const Scheduling: React.FC = () => {
 
   const saveProcessDelay = () => {
     if (!selectedProcessStep) return;
-    
-    // Update the product's process flow with new delay configuration
-    // Note: In a real app, you'd persist this to backend
-    const updatedProducts = products.map(product => ({
-      ...product,
-      processFlow: product.processFlow.map(step => 
-        step.id === selectedProcessStep.id 
+
+    // Find which product owns this process step and persist the delay change
+    const owningProduct = products.find(p =>
+      p.processFlow.some(step => step.id === selectedProcessStep.id)
+    );
+    if (owningProduct) {
+      const updatedFlow = owningProduct.processFlow.map(step =>
+        step.id === selectedProcessStep.id
           ? { ...step, nextProcessDelay: processDelay }
           : step
-      )
-    }));
-    // Products updated in memory for this session
-    console.log('Updated products with process delay:', updatedProducts);
+      );
+      updateProduct(owningProduct.id, { processFlow: updatedFlow });
+    }
+
     setShowProcessDelayModal(false);
-    setToast({ type: 'success', message: 'Process delay configuration saved successfully!' });
+    setToast({ type: 'success', message: 'Process delay configuration saved and applied to schedule!' });
   };
 
   const submitOvertimeRequest = () => {
@@ -1033,16 +1044,8 @@ const Scheduling: React.FC = () => {
                     if (now <= start) progress = 0;
                     else if (now >= end) progress = 100;
                     else progress = Math.round(((now.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100);
-                    // Auto-complete if finished before end date
-                    if (progress === 100 && item.status !== 'completed' && now <= end) {
-                      updateScheduleItem(item.id, { status: 'completed', actualEndTime: now.toISOString() });
-                    }
                     // Calculate status automatically
                     const autoStatus = getAutoStatus(item);
-                    // If delayed, show popup for manual completion
-                    if (autoStatus === 'delayed' && showDelayedPopup.poId !== item.poId && !showDelayedPopup.open) {
-                      setShowDelayedPopup({poId: item.poId, open: true});
-                    }
                     
                     return (
                       <tr key={item.id + refreshKey} className="hover:bg-gray-50">

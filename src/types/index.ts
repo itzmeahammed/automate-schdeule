@@ -87,10 +87,12 @@ export interface PurchaseOrder {
   urgencyLevel: 'normal' | 'urgent' | 'critical';
   specialInstructions: string;
   estimatedValue: number;
+  rmInDate?: string;           // Raw Material In date — production cannot start before this
+  startDate?: string;          // Planned production start date — required for accurate scheduling
   actualStartDate?: string;
   actualCompletionDate?: string;
   qualityApproved: boolean;
-  priority: 'urgent' | 'high' | 'medium' | 'low'; // Added priority field
+  priority: 'urgent' | 'high' | 'medium' | 'low';
 }
 
 export interface OvertimeRecord {

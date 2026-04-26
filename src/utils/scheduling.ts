@@ -1,4 +1,4 @@
-import { Machine, Product, PurchaseOrder, ScheduleItem, Shift, Alert, ProcessDelay } from '../types';
+import { Machine, Product, ProcessStep, PurchaseOrder, ScheduleItem, Shift, Alert, ProcessDelay } from '../types';
 
 // Enhanced helper function to calculate working hours from shift timing
 export const calculateWorkingHoursFromShift = (shiftTiming: string | Shift): number => {
@@ -382,35 +382,21 @@ export const checkDeliveryFeasibility = (
   // Calculate total available machine time considering existing schedule
   let totalAvailableTime = 0;
   const machineUtilization: { [key: string]: number } = {};
-  const debugMachines: any[] = [];
   product.processFlow.forEach(step => {
     const machine = machines.find(m => m.id === step.machineId);
     if (machine && (machine.status === 'active' || machine.status === 'idle')) {
-      // If no active shifts, calculate from machine's shift timing
       const activeShifts = shifts.filter(shift => shift.isActive);
       const dailyCapacity = activeShifts.length > 0 ? calculateMachineCapacity(machine, shifts) : (calculateWorkingHoursFromShift(machine.shiftTiming) * 60);
       const totalCapacity = dailyCapacity * workingDays;
-      // Calculate existing utilization
       const existingUtilization = existingSchedule
         .filter(item => item.machineId === machine.id)
         .reduce((total, item) => total + item.allocatedTime, 0);
       const availableTime = Math.max(0, totalCapacity - existingUtilization);
       totalAvailableTime += availableTime;
       machineUtilization[machine.id] = (existingUtilization / totalCapacity) * 100;
-      debugMachines.push({
-        machineId: machine.id,
-        status: machine.status,
-        dailyCapacity,
-        totalCapacity,
-        existingUtilization,
-        availableTime
-      });
     }
   });
   if (totalAvailableTime === 0) {
-    // Debug log
-    // eslint-disable-next-line no-console
-    console.log('[Feasibility Debug] No available machine time:', debugMachines);
     return {
       feasible: false,
       message: 'No available machine time for the selected period. All machines may be fully booked or inactive.',
@@ -576,29 +562,33 @@ export const generateScheduleWithConflicts = (
 ): { schedule: ScheduleItem[]; conflicts: ScheduleConflict[] } => {
   const schedule: ScheduleItem[] = [];
   const conflicts: ScheduleConflict[] = [];
-  // Priority: urgent > high > medium > low
   const priorityOrder = { urgent: 4, high: 3, medium: 2, low: 1 };
-  
-  // Sort POs by priority and delivery date
+
   const sortedPOs = [...purchaseOrders]
     .filter(po => po.status !== 'completed' && po.status !== 'cancelled')
     .sort((a, b) => {
-      // Priority: urgent > high > medium > low
       const prioDiff = (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
       if (prioDiff !== 0) return prioDiff;
-      // Then by delivery date
       return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime();
     });
 
-  // Machine availability tracking - start from current date
   const machineAvailability: { [machineId: string]: Date } = {};
   const machineAssignments: { [machineId: string]: ScheduleItem[] } = {};
-  const currentDate = new Date();
-  currentDate.setHours(9, 0, 0, 0); // Start at 9 AM by default
-  
+
+  // Initialize machine availability from the earliest PO planned start (not hardcoded "now at 9 AM")
+  const earliestPOStart = sortedPOs.reduce((earliest, po) => {
+    const candidates = [
+      po.startDate ? new Date(po.startDate).getTime() : Infinity,
+      po.rmInDate  ? new Date(po.rmInDate).getTime()  : Infinity,
+      po.poDate    ? new Date(po.poDate).getTime()    : Infinity,
+    ].filter(t => t !== Infinity);
+    const poStart = candidates.length ? new Date(Math.min(...candidates)) : new Date();
+    return poStart < earliest ? poStart : earliest;
+  }, new Date());
+
   machines.forEach(machine => {
     if (machine.status === 'active') {
-      machineAvailability[machine.id] = new Date(currentDate);
+      machineAvailability[machine.id] = new Date(earliestPOStart);
       machineAssignments[machine.id] = [];
     }
   });
@@ -607,49 +597,64 @@ export const generateScheduleWithConflicts = (
     const product = products.find(p => p.id === po.productId);
     if (!product) return;
 
-    let lastStepEndTime = new Date(0); // Initialize for each PO
+    // Compute the earliest this PO can start — respects startDate, rmInDate, and poDate
+    const poEarliestStart = new Date(Math.max(
+      po.startDate ? new Date(po.startDate).getTime() : 0,
+      po.rmInDate  ? new Date(po.rmInDate).getTime()  : 0,
+      po.poDate    ? new Date(po.poDate).getTime()    : 0,
+      Date.now()
+    ));
 
-    product.processFlow
-      .sort((a, b) => a.sequence - b.sequence)
-      .forEach((step) => {
+    let lastStepEndTime: Date = new Date(0);
+    let lastStepStartTime: Date = new Date(0);
+    let prevStep: ProcessStep | null = null;
+
+    const sortedSteps = [...product.processFlow].sort((a, b) => a.sequence - b.sequence);
+
+    sortedSteps.forEach((step) => {
         const machine = machines.find(m => m.id === step.machineId);
         if (!machine || machine.status !== 'active') return;
 
         const setupTime = step.setupTime || 0;
         const cycleTime = step.cycleTimePerPart * po.quantity;
-        
-        // Apply machine efficiency and scale optimization
         const efficiencyFactor = machine.efficiency / 100;
         const adjustedCycleTime = cycleTime / efficiencyFactor;
         const scaleReduction = po.quantity > 50 ? 0.85 : po.quantity > 20 ? 0.9 : 1.0;
         const totalTime = setupTime + (adjustedCycleTime * scaleReduction);
 
-        // The next step can't start before the previous one ends AND the machine is free.
+        const machineNextAvailable = machineAvailability[machine.id] || new Date(poEarliestStart);
+
+        let sequentialConstraint: Date;
+
+        if (prevStep === null) {
+          // First process step: respect the PO's planned start date / RM In date
+          sequentialConstraint = new Date(poEarliestStart);
+        } else {
+          const delay = prevStep.nextProcessDelay;
+          if (delay && (delay.type === '1day' || delay.type === '2day')) {
+            // Overlap / buffer-stock mode:
+            // Next process can begin once the previous process has run for the buffer period.
+            // e.g. 1-day buffer → process 2 starts (process 1 startDate + 24 h), not after process 1 ends.
+            const delayHours = calculateProcessDelay(delay);
+            sequentialConstraint = new Date(lastStepStartTime.getTime() + delayHours * 60 * 60 * 1000);
+          } else {
+            // Sequential (immediate / chain_complete): wait for full completion of previous step
+            sequentialConstraint = new Date(lastStepEndTime);
+          }
+        }
+
         const earliestPossibleStart = new Date(Math.max(
-          (machineAvailability[machine.id] || new Date(0)).getTime(),
-          lastStepEndTime.getTime()
+          machineNextAvailable.getTime(),
+          sequentialConstraint.getTime()
         ));
 
-        // Calculate start date considering shift timing and machine availability
-        const startDate = calculateShiftBasedStartDate(
-          machine,
-          earliestPossibleStart,
-          shifts,
-          holidays
-        );
+        const startDate = calculateShiftBasedStartDate(machine, earliestPossibleStart, shifts, holidays);
+        const endDate   = calculateShiftBasedEndDate(machine, startDate, totalTime, shifts, holidays);
 
-        // Calculate end date based on shift timing
-        const endDate = calculateShiftBasedEndDate(
-          machine,
-          startDate,
-          totalTime,
-          shifts,
-          holidays
-        );
-
-        // Update machine availability and the end time for the next step in the sequence
         machineAvailability[machine.id] = new Date(endDate);
-        lastStepEndTime = new Date(endDate);
+        lastStepEndTime   = new Date(endDate);
+        lastStepStartTime = new Date(startDate);
+        prevStep = step;
 
         // Check for conflicts
         const conflictsForMachine = (machineAssignments[step.machineId] || []).filter(item => {
@@ -807,13 +812,12 @@ export const findNextAvailableSlot = (
     remainingDuration -= availableTime;
     
     if (remainingDuration > 0) {
-      // Move to next shift
       const nextShift = getNextShiftStart(shiftEnd, activeShifts);
       currentTime = nextShift;
     }
   }
 
-  return new Date(startTime);
+  return currentTime;
 };
 
 export const findCurrentShift = (time: Date, shifts: Shift[]): Shift | null => {
@@ -1259,16 +1263,6 @@ const isDelayed = (po: PurchaseOrder): boolean => {
   
   const now = new Date();
   const delayed = po.status !== 'completed' && deliveryDate < now;
-  if (delayed) {
-    // Debug log for delayed PO
-    // eslint-disable-next-line no-console
-    console.log('[isDelayed]', {
-      poNumber: po.poNumber,
-      status: po.status,
-      deliveryDate: po.deliveryDate,
-      now: now.toISOString(),
-    });
-  }
   return delayed;
 };
 

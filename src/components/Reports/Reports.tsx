@@ -11,6 +11,7 @@ import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, Width
 const Reports: React.FC = () => {
   const { purchaseOrders, products, machines, scheduleItems, user, holidays, shifts } = useApp();
   const [reportType, setReportType] = useState<'summary' | 'detailed' | 'machine-utilization' | 'overtime'>('summary');
+  const [exportError, setExportError] = useState<string>('');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -37,6 +38,8 @@ const Reports: React.FC = () => {
   };
 
   const generateReport = async (format: 'pdf' | 'excel' | 'word') => {
+    setExportError('');
+    try {
     // Prepare tabular data for export
     const tableData = [
       ['Company Name', user?.name || 'Manufacturing Company'],
@@ -294,6 +297,9 @@ const Reports: React.FC = () => {
       a.click();
       URL.revokeObjectURL(url);
       return;
+    }
+    } catch {
+      setExportError('Export failed. Please try again.');
     }
   };
 
@@ -573,7 +579,6 @@ const Reports: React.FC = () => {
             {machines.map(machine => {
               const machineSchedule = scheduleItems.filter(item => item.machineId === machine.id);
         const completedWithActuals = machineSchedule.filter(item => item.status === 'completed' && item.actualStartTime && item.actualEndTime);
-        console.log('Machine:', machine, 'Completed with actuals:', completedWithActuals);
               const totalTime = machineSchedule.reduce((sum, item) => sum + item.allocatedTime, 0);
               const utilizationPercentage = machine.workingHours ? Math.min(100, (totalTime / (machine.workingHours * 60)) * 100) : 0;
         const liveEfficiency = calculateMachineEfficiency(machine.id, scheduleItems);
@@ -789,6 +794,8 @@ const Reports: React.FC = () => {
 
   // 2. Add exportDetailedReport function
   const exportDetailedReport = async (format: 'pdf' | 'excel') => {
+    setExportError('');
+    try {
     // Prepare data - export each schedule item (process step) as a separate row
     const detailedData = scheduleItems.map(item => {
       const product = products.find(p => p.id === item.productId);
@@ -894,6 +901,9 @@ const Reports: React.FC = () => {
       XLSX.writeFile(wb, `detailed-report-${new Date().toISOString().split('T')[0]}.xlsx`);
       return;
     }
+    } catch {
+      setExportError('Export failed. Please try again.');
+    }
   };
 
   // Overtime Report Component
@@ -917,9 +927,10 @@ const Reports: React.FC = () => {
         const shift = shifts.find(s => s.id === record.shiftId);
         if (!shift) return recordTotal;
         
-        const multiplier = getOvertimeMultiplier(record.actualOvertimeHours || record.plannedOvertimeHours);
+        const overtimeHours = record.actualOvertimeHours ?? record.plannedOvertimeHours ?? 0;
+        const multiplier = getOvertimeMultiplier(overtimeHours);
         const baseCost = 25; // Base hourly rate
-        return recordTotal + ((record.actualOvertimeHours || record.plannedOvertimeHours) * baseCost * multiplier);
+        return recordTotal + (overtimeHours * baseCost * multiplier);
       }, 0);
     }, 0);
 
@@ -1077,6 +1088,13 @@ const Reports: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {exportError && (
+        <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex items-center gap-2">
+          <AlertTriangle size={16} />
+          {exportError}
+        </div>
+      )}
 
       {/* <div className="flex gap-2 mt-2">
         <button

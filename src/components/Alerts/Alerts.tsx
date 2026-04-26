@@ -34,6 +34,7 @@ const Alerts: React.FC = () => {
   const [showMaintenanceModal, setShowMaintenanceModal] = useState<{ open: boolean, machineId: string }>({ open: false, machineId: '' });
   const [newMaintenanceDate, setNewMaintenanceDate] = useState('');
   const [showRedistributeModal, setShowRedistributeModal] = useState<{ open: boolean, machineId: string }>({ open: false, machineId: '' });
+  const [redistributeMachineId, setRedistributeMachineId] = useState('');
 
   const filteredAlerts = alerts.filter(alert => {
     const matchesFilter = filter === 'all' || 
@@ -119,8 +120,8 @@ const Alerts: React.FC = () => {
 
   // Calculate total time to move
   const totalTimeToMove = scheduleItems.filter(item => selectedJobIds.includes(item.id)).reduce((sum, item) => sum + (item.allocatedTime || 0), 0);
-  const newMachineLoad = newMaintenanceDate ? getMachineLoad(newMaintenanceDate) + totalTimeToMove : 0;
-  const newMachineCapacity = newMaintenanceDate ? getMachineCapacity(newMaintenanceDate) : 0;
+  const newMachineLoad = redistributeMachineId ? getMachineLoad(redistributeMachineId) + totalTimeToMove : 0;
+  const newMachineCapacity = redistributeMachineId ? getMachineCapacity(redistributeMachineId) : 0;
   const willOverload = newMachineCapacity > 0 && newMachineLoad > newMachineCapacity;
 
   return (
@@ -444,8 +445,8 @@ const Alerts: React.FC = () => {
               </div>
               <select
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-4"
-                value={newMaintenanceDate} // reuse state for selected machineId
-                onChange={e => setNewMaintenanceDate(e.target.value)}
+                value={redistributeMachineId}
+                onChange={e => setRedistributeMachineId(e.target.value)}
               >
                 <option value="">Select Machine</option>
                 {machines.filter(m => m.id !== showRedistributeModal.machineId && m.status === 'active').map(m => {
@@ -458,7 +459,7 @@ const Alerts: React.FC = () => {
                   );
                 })}
               </select>
-              {newMaintenanceDate && (
+              {redistributeMachineId && (
                 <div className={`mb-2 text-sm ${willOverload ? 'text-red-600' : 'text-green-700'}`}>
                   {willOverload
                     ? `Warning: This machine will be overloaded (${newMachineLoad} min > ${newMachineCapacity} min)`
@@ -472,7 +473,7 @@ const Alerts: React.FC = () => {
                   onClick={() => {
                     // Update all schedule items for the old machine to the new machine
                     const oldMachineId = showRedistributeModal.machineId;
-                    const newMachineId = newMaintenanceDate;
+                    const newMachineId = redistributeMachineId;
                     if (!newMachineId) {
                       setRedistributeError('Please select a machine.');
                       return;
@@ -491,7 +492,7 @@ const Alerts: React.FC = () => {
                     ));
                     addSystemNotification('info', 'Jobs Redistributed', `Selected jobs from ${machines.find(m => m.id === oldMachineId)?.machineName} moved to ${machines.find(m => m.id === newMachineId)?.machineName}.`);
                     setShowRedistributeModal({ open: false, machineId: '' });
-                    setNewMaintenanceDate('');
+                    setRedistributeMachineId('');
                     setSelectedJobIds([]);
                     // Mark alert as resolved
                     setAlerts(alerts.map((alert: Alert) => alert.affectedEntities.includes(oldMachineId) && alert.type === 'capacity_overload' ? { ...alert, isResolved: true } : alert));
@@ -509,6 +510,7 @@ const Alerts: React.FC = () => {
                   className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg font-semibold hover:bg-gray-400 transition"
                   onClick={() => {
                     setShowRedistributeModal({ open: false, machineId: '' });
+                    setRedistributeMachineId('');
                     setSelectedJobIds([]);
                     setRedistributeError('');
                   }}

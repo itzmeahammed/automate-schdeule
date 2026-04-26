@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { PurchaseOrder } from '../../types';
 import { checkDeliveryFeasibility, generateScheduleWithConflicts } from '../../utils/scheduling';
-import { Plus, Edit2, Trash2, Save, X, AlertTriangle, CheckCircle, Info, Copy, Clock } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, X, AlertTriangle, CheckCircle, Info, Copy, Clock, Package, Calendar, Truck } from 'lucide-react';
 import { ScheduleConflict, getAutoPOStatus } from '../../utils/scheduling';
 
 const PurchaseOrders: React.FC = () => {
@@ -15,9 +15,11 @@ const PurchaseOrders: React.FC = () => {
     productId: '',
     quantity: 0,
     deliveryDate: '',
+    rmInDate: '',
+    startDate: '',
     remarks: '',
     status: 'pending',
-    priority: 'medium', // default
+    priority: 'medium',
   });
   const [feasibilityCheck, setFeasibilityCheck] = useState<{
     feasible: boolean;
@@ -34,7 +36,6 @@ const PurchaseOrders: React.FC = () => {
     open: boolean;
     machines: Array<{ id: string; name: string; status: string; }>;
   }>({ open: false, machines: [] });
-console.log(purchaseOrders , "hello");
 
   // Handle toast notifications
   React.useEffect(() => {
@@ -68,16 +69,40 @@ console.log(purchaseOrders , "hello");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Enforce startDate — scheduling cannot be accurate without it
+    if (!formData.startDate) {
+      setToast({ type: 'error', message: 'Production Start Date is required before saving a Sales Order.' });
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+
+    // startDate must not be before poDate
+    if (formData.poDate && formData.startDate < formData.poDate) {
+      setToast({ type: 'error', message: 'Production Start Date cannot be before the PO Date.' });
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+
+    // rmInDate must not be before poDate (if provided)
+    if (formData.rmInDate && formData.poDate && formData.rmInDate < formData.poDate) {
+      setToast({ type: 'error', message: 'RM In Date cannot be before the PO Date.' });
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+
     const priority = formData.priority || autoCalculatePriority(formData.deliveryDate || '');
-      const newPO: PurchaseOrder = {
+    const newPO: PurchaseOrder = {
       id: editingId || crypto.randomUUID(),
-        poNumber: formData.poNumber || '',
-        poDate: formData.poDate || new Date().toISOString().split('T')[0],
-        productId: formData.productId || '',
-        quantity: formData.quantity || 0,
-        deliveryDate: formData.deliveryDate || '',
-        remarks: formData.remarks || '',
-        status: formData.status || 'pending',
+      poNumber: formData.poNumber || '',
+      poDate: formData.poDate || new Date().toISOString().split('T')[0],
+      productId: formData.productId || '',
+      quantity: formData.quantity || 0,
+      deliveryDate: formData.deliveryDate || '',
+      rmInDate: formData.rmInDate || '',
+      startDate: formData.startDate || '',
+      remarks: formData.remarks || '',
+      status: formData.status || 'pending',
       customerName: formData.customerName || '',
       customerContact: formData.customerContact || '',
       urgencyLevel: formData.urgencyLevel || 'normal',
@@ -145,6 +170,8 @@ console.log(purchaseOrders , "hello");
       productId: '',
       quantity: 0,
       deliveryDate: '',
+      rmInDate: '',
+      startDate: '',
       remarks: '',
       status: 'pending',
       priority: 'medium',
@@ -463,7 +490,56 @@ console.log(purchaseOrders , "hello");
                   required
                 />
               </div>
+            </div>
 
+            {/* Scheduling Constraints Section */}
+            <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <div className="flex items-center gap-2 mb-3">
+                <Calendar size={16} className="text-amber-600" />
+                <h4 className="text-sm font-semibold text-amber-800">Scheduling Constraints</h4>
+                <span className="ml-auto text-xs text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">Required for accurate scheduling</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                    <Truck size={14} className="text-blue-500" />
+                    RM In Date
+                    <span className="text-xs text-gray-400 ml-1">(when raw materials arrive)</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.rmInDate || ''}
+                    min={formData.poDate}
+                    onChange={(e) => setFormData(prev => ({ ...prev, rmInDate: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                    <Package size={14} className="text-green-600" />
+                    Production Start Date
+                    <span className="text-red-500 ml-1">*</span>
+                    <span className="text-xs text-gray-400 ml-1">(when manufacturing begins)</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.startDate || ''}
+                    min={formData.rmInDate || formData.poDate}
+                    onChange={(e) => setFormData(prev => ({ ...prev, startDate: e.target.value }))}
+                    className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${!formData.startDate ? 'border-amber-400 bg-amber-50' : 'border-gray-300'}`}
+                    required
+                  />
+                  {!formData.startDate && (
+                    <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                      <AlertTriangle size={12} />
+                      Required — scheduling will not run without this date
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Status
@@ -797,33 +873,21 @@ console.log(purchaseOrders , "hello");
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  PO Number
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PO Number</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Qty</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PO Date</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><Truck size={12} />RM In</span>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Product
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><Package size={12} />Start Date</span>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Quantity
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  PO Date
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Delivery Date
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Priority
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Overtime
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delivery</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Priority</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Overtime</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -833,80 +897,99 @@ console.log(purchaseOrders , "hello");
                 const autoStatus = getAutoPOStatus(po, scheduleItems || []);
                 const overtimeInfo = getPOOvertimeInfo(po.id);
                 return (
-                  <tr key={po.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                  <tr key={po.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-gray-900">
                       {po.poNumber}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {product ? `${product.productName} (${product.partNumber})` : 'Unknown Product'}
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                      <div>
+                        <p className="font-medium text-gray-800">{product?.productName || 'Unknown'}</p>
+                        <p className="text-xs text-gray-400">{product?.partNumber}</p>
+                      </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {po.quantity}
+                    <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-700">
+                      {po.quantity.toLocaleString()}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                       {new Date(po.poDate).toLocaleDateString()}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {new Date(po.deliveryDate).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(autoStatus)}`}>
-                        {autoStatus}
-                      </span>
-                      {/* Force Complete button for delayed POs */}
-                      {autoStatus === 'delayed' && (
-                        <button
-                          className="ml-2 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
-                          onClick={() => {
-                            // Set PO to completed
-                            updatePurchaseOrder(po.id, { status: 'completed' });
-                            // Set all related schedule items to completed
-                            setScheduleItems(scheduleItems.map(item =>
-                              item.poId === po.id ? { ...item, status: 'completed', actualEndTime: new Date().toISOString() } : item
-                            ));
-                          }}
-                          title="Force Complete (Staff override)"
-                        >
-                          Force Complete
-                        </button>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm">
+                      {po.rmInDate ? (
+                        <span className="text-blue-600 font-medium">{new Date(po.rmInDate).toLocaleDateString()}</span>
+                      ) : (
+                        <span className="text-gray-300 italic text-xs">Not set</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getPriorityColor(po.priority)}`}>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm">
+                      {po.startDate ? (
+                        <span className="text-green-700 font-semibold">{new Date(po.startDate).toLocaleDateString()}</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium">
+                          <AlertTriangle size={11} /> Not set
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                      {new Date(po.deliveryDate).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="flex flex-col gap-1">
+                        <span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${getStatusColor(autoStatus)}`}>
+                          {autoStatus}
+                        </span>
+                        {autoStatus === 'delayed' && (
+                          <button
+                            className="px-2 py-0.5 text-xs bg-green-600 text-white rounded hover:bg-green-700 font-medium"
+                            onClick={() => {
+                              updatePurchaseOrder(po.id, { status: 'completed' });
+                              setScheduleItems(scheduleItems.map(item =>
+                                item.poId === po.id ? { ...item, status: 'completed', actualEndTime: new Date().toISOString() } : item
+                              ));
+                            }}
+                            title="Force Complete (Staff override)"
+                          >
+                            Force Complete
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${getPriorityColor(po.priority)}`}>
                         {po.priority}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                       {overtimeInfo.totalOvertimeHours > 0 ? (
                         <div className="flex items-center gap-1 text-orange-600">
-                          <Clock size={14} />
-                          <span className="font-medium">{overtimeInfo.totalOvertimeHours.toFixed(1)}h</span>
-                          <span className="text-xs text-gray-500">({overtimeInfo.overtimeRecords} records)</span>
+                          <Clock size={13} />
+                          <span className="font-medium text-xs">{overtimeInfo.totalOvertimeHours.toFixed(1)}h</span>
                         </div>
                       ) : (
-                        <span className="text-gray-400">No overtime</span>
+                        <span className="text-gray-300 text-xs">—</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      <div className="flex items-center gap-2">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="flex items-center gap-1">
                         <button
                           onClick={() => handleEdit(po)}
-                          className="text-blue-600 hover:text-blue-800"
+                          className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
+                          title="Edit"
                         >
-                          <Edit2 size={16} />
+                          <Edit2 size={14} />
                         </button>
                         <button
                           onClick={() => handleDuplicate(po)}
-                          className="text-emerald-600 hover:text-emerald-800"
-                          title="Duplicate Purchase Order"
+                          className="p-1.5 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded transition-colors"
+                          title="Duplicate"
                         >
-                          <Copy size={16} />
+                          <Copy size={14} />
                         </button>
                         <button
                           onClick={() => handleDeletePO(po.id)}
-                          className="text-red-600 hover:text-red-800"
+                          className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                          title="Delete"
                         >
-                          <Trash2 size={16} />
+                          <Trash2 size={14} />
                         </button>
                       </div>
                     </td>

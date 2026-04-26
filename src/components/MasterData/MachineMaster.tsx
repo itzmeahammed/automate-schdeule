@@ -182,9 +182,18 @@ const MachineMaster: React.FC = () => {
     setFormData({
       machineName: '',
       machineType: '',
+      capacity: '',
       shiftTiming: '09:00-17:00',
       status: 'active',
+      location: '',
+      efficiency: 100,
+      lastMaintenance: '',
+      nextMaintenance: '',
+      specifications: { power: '', dimensions: '', weight: '' },
+      problems: [],
+      associatedProcesses: [],
     });
+    setManualProcessInput('');
     setIsAdding(false);
     setEditingId(null);
   };
@@ -563,7 +572,11 @@ const MachineMaster: React.FC = () => {
                           <Copy size={16} />
                         </button>
                         <button
-                          onClick={() => handleDeleteMachine(machine.id)}
+                          onClick={() => {
+                            if (window.confirm(`Delete "${machine.machineName}"? This will also delete all purchase orders that use this machine.`)) {
+                              handleDeleteMachine(machine.id);
+                            }
+                          }}
                           className="text-red-600 hover:text-red-800"
                         >
                           <Trash2 size={16} />

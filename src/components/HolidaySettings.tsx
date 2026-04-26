@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../contexts/AppContext';
 import { Calendar, Plus, Trash2, RefreshCw, Star, Upload, Download, Edit2, Check, X, Clock, AlertTriangle } from 'lucide-react';
 
@@ -45,16 +45,36 @@ const HolidaySettings: React.FC = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showRemoveModal, setShowRemoveModal] = useState<{ date: string, reason: string } | null>(null);
   
-  // Overtime policy settings
-  const [overtimePolicySettings, setOvertimePolicySettings] = useState({
-    holidayOvertimeMultiplier: 2.5, // Holiday overtime multiplier
-    allowHolidayWork: false, // Whether work is allowed on holidays
-    maxHolidayOvertimeHours: 8, // Maximum overtime hours on holidays
-    requireApprovalForHolidayWork: true, // Require approval for holiday work
-    emergencyOverrideAllowed: true // Allow emergency override
+  // Overtime policy settings — persisted to localStorage
+  const [overtimePolicySettings, setOvertimePolicySettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('overtimePolicySettings');
+      return saved ? JSON.parse(saved) : {
+        holidayOvertimeMultiplier: 2.5,
+        allowHolidayWork: false,
+        maxHolidayOvertimeHours: 8,
+        requireApprovalForHolidayWork: true,
+        emergencyOverrideAllowed: true,
+      };
+    } catch {
+      return {
+        holidayOvertimeMultiplier: 2.5,
+        allowHolidayWork: false,
+        maxHolidayOvertimeHours: 8,
+        requireApprovalForHolidayWork: true,
+        emergencyOverrideAllowed: true,
+      };
+    }
   });
-  
+
   const [showOvertimePolicyModal, setShowOvertimePolicyModal] = useState(false);
+
+  // Auto-hide success/error messages after 3.5 seconds
+  useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(() => setMessage(null), 3500);
+    return () => clearTimeout(t);
+  }, [message]);
 
   // Helper to get all Sundays in a year
   const getAllSundays = (year: number): string[] => {
@@ -670,8 +690,9 @@ const HolidaySettings: React.FC = () => {
               </button>
               <button
                 onClick={() => {
+                  localStorage.setItem('overtimePolicySettings', JSON.stringify(overtimePolicySettings));
                   setShowOvertimePolicyModal(false);
-                  setMessage({ type: 'success', text: 'Overtime policy settings updated.' });
+                  setMessage({ type: 'success', text: 'Overtime policy settings saved.' });
                 }}
                 className="px-6 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
               >

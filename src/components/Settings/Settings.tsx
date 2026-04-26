@@ -105,6 +105,21 @@ const Settings: React.FC = () => {
     });
   }, [machines, products, purchaseOrders, scheduleItems, notifications]);
 
+  // Sync form when user changes in context (e.g. updated from another screen)
+  useEffect(() => {
+    if (user) {
+      setFormData(prev => ({
+        ...prev,
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        password: user.password,
+        profileImage: user.profileImage || prev.profileImage,
+        role: user.role,
+      }));
+    }
+  }, [user]);
+
   // Enhanced profile submit with validation
   const handleProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

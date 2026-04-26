@@ -123,6 +123,11 @@ const ProductMaster: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const invalidStep = formData.processFlow?.find(step => step.cycleTimePerPart <= 0);
+    if (invalidStep) {
+      alert(`Cycle time for step "${invalidStep.stepName || `Step ${invalidStep.sequence}`}" must be greater than 0.`);
+      return;
+    }
     if (editingId) {
       updateProduct(editingId, formData);
       setEditingId(null);
@@ -259,7 +264,7 @@ const ProductMaster: React.FC = () => {
       {isAdding && (
         <div className="bg-white/90 rounded-xl shadow p-4 mb-6 border border-blue-100">
           <div className="mb-4">
-            <h3 className="text-lg font-bold text-gray-900 mb-1">Add New Product</h3>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">{editingId ? 'Edit Product' : 'Add New Product'}</h3>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -333,7 +338,7 @@ const ProductMaster: React.FC = () => {
                         value={step.cycleTimePerPart}
                         onChange={e => updateProcessStep(step.id, { cycleTimePerPart: Number(e.target.value) })}
                         className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white text-gray-900 text-sm shadow-sm"
-                        min="0"
+                        min="0.01"
                         step="0.1"
                         required
                       />
@@ -365,7 +370,7 @@ const ProductMaster: React.FC = () => {
               className="flex items-center gap-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors shadow font-bold text-base mx-auto"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-              Add Product
+              {editingId ? 'Update Product' : 'Add Product'}
             </button>
           </form>
         </div>
@@ -426,7 +431,11 @@ const ProductMaster: React.FC = () => {
                         <Copy size={16} />
                       </button>
                       <button
-                        onClick={() => deleteProduct(product.id)}
+                        onClick={() => {
+                          if (window.confirm(`Delete "${product.productName}" and all its process steps?`)) {
+                            deleteProduct(product.id);
+                          }
+                        }}
                         className="text-red-600 hover:text-red-800"
                       >
                         <Trash2 size={16} />
